@@ -14,20 +14,32 @@
     installer\Driftwall.iss is compiled against dist\Driftwall.exe and the result is verified.
 
     CODE SIGNING. Windows shows "Unknown publisher" for any executable that carries no Authenticode
-    signature from a certificate authority. Give this script a certificate and it signs Driftwall.exe,
+    signature from a certificate authority. Give this script a way to sign and it signs Driftwall.exe,
     the setup wizard and the uninstaller, so all three show the certificate's name as their verified
-    publisher:
+    publisher. Four ways:
 
+      -ArtifactSigningEndpoint / -ArtifactSigningAccount / -ArtifactSigningProfile
+                                      Microsoft's Artifact Signing service (the former Trusted
+                                      Signing). No certificate file at all; Azure credentials come
+                                      from the environment (see the parameter comments). Works
+                                      unattended on GitHub-hosted runners.
       -CertificateThumbprint <sha1>   a code-signing certificate in the current user's certificate
-                                      store (Certificates > Personal). Recommended: no secrets on the
-                                      command line.
-      -PfxPath <file> [-PfxPassword]  a .pfx file instead. The password is visible to other processes
-                                      while signing runs; prefer the store.
+                                      store (Certificates > Personal), including one on a hardware
+                                      token or a CA's cloud signer that presents itself as a store
+                                      certificate. No secrets on the command line.
+      -SignCommand <command line>     any other signing tool, written as Inno Setup's SignTool
+                                      directive wants it: $f stands for the file, $q for a quote,
+                                      $$ for a literal dollar. Used for the exe and handed to Inno
+                                      for the wizard and uninstaller. Example (SSL.com eSigner):
+                                      CodeSignTool sign -username $qme$q -password $q...$q -credential_id ... -input_file_path $f -override
+      -PfxPath <file> [-PfxPassword]  a .pfx file. Only for keys that were allowed to leave their
+                                      hardware, which certificate authorities no longer issue.
 
-    Both can also come from the environment (DRIFTWALL_SIGN_THUMBPRINT, DRIFTWALL_SIGN_PFX,
-    DRIFTWALL_SIGN_PFX_PASSWORD), which is what a build machine would use. Without either, nothing is
-    signed and the build is otherwise identical. signtool.exe comes from an installed Windows SDK, or
-    is fetched from the Microsoft.Windows.SDK.BuildTools NuGet package into tools\.inno.
+    All of them can also come from the environment (DRIFTWALL_ARTIFACT_SIGNING_ENDPOINT, _ACCOUNT,
+    _PROFILE; DRIFTWALL_SIGN_THUMBPRINT; DRIFTWALL_SIGN_COMMAND; DRIFTWALL_SIGN_PFX and
+    DRIFTWALL_SIGN_PFX_PASSWORD), which is what a build machine uses. Without any, nothing is signed
+    and the build is otherwise identical. signtool.exe comes from an installed Windows SDK, or is
+    fetched from the Microsoft.Windows.SDK.BuildTools NuGet package into tools\.inno.
 
     .\build.ps1 -Installer runs this after publishing. Run it directly to package an exe you already
     have, or on a machine without the .NET SDK.
@@ -57,10 +69,24 @@ param(
     [string]$CertificateThumbprint = $env:DRIFTWALL_SIGN_THUMBPRINT,
     [string]$PfxPath = $env:DRIFTWALL_SIGN_PFX,
     [string]$PfxPassword = $env:DRIFTWALL_SIGN_PFX_PASSWORD,
+    # A complete signing command line for some other tool, with $f where the file goes (see above).
+    [string]$SignCommand = $env:DRIFTWALL_SIGN_COMMAND,
     # RFC 3161 timestamp server, so signatures stay valid after the certificate expires. Empty skips it.
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     # Explicit signtool.exe, if the auto-detection should not be used.
     [string]$SignToolPath = $env:DRIFTWALL_SIGNTOOL,
+
+    # --- Microsoft Artifact Signing (optional, instead of a certificate of your own) ---
+    # The three identifiers of a certificate profile in the Azure service: the regional endpoint
+    # (Korea Central is https://krc.codesigning.azure.net), the account name and the profile name.
+    # The private key never leaves Microsoft; signtool talks to the service through a plug-in
+    # fetched from NuGet. Authentication comes from the environment: AZURE_TENANT_ID,
+    # AZURE_CLIENT_ID and AZURE_CLIENT_SECRET for a service principal holding the "Artifact Signing
+    # Certificate Profile Signer" role (what a build machine uses), or an "az login" session on a
+    # workstation.
+    [string]$ArtifactSigningEndpoint = $env:DRIFTWALL_ARTIFACT_SIGNING_ENDPOINT,
+    [string]$ArtifactSigningAccount = $env:DRIFTWALL_ARTIFACT_SIGNING_ACCOUNT,
+    [string]$ArtifactSigningProfile = $env:DRIFTWALL_ARTIFACT_SIGNING_PROFILE,
 
     # Regenerate installer\art even if it already exists.
     [switch]$RegenerateArt,
@@ -201,12 +227,46 @@ function Find-SignTool {
     return $local.FullName
 }
 
-# The signtool arguments shared by every file we sign: SHA-256 digest, RFC 3161 timestamp, and the
-# product name and URL Windows shows in its security prompts.
+# The Artifact Signing plug-in for signtool, from Microsoft's NuGet package, unpacked next to Inno.
+# The package was renamed with the service in 2026; the old name still resolves and is the fallback.
+function Get-ArtifactSigningDlib {
+    $dir = Join-Path $toolsDir 'artifact-signing'
+    $dlib = Get-ChildItem $dir -Recurse -Filter Azure.CodeSigning.Dlib.dll -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+    if ($dlib) { return $dlib.FullName }
+
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $package = Join-Path $dir 'client.zip'
+    Get-Downloader
+    $downloaded = $false
+    foreach ($name in 'Microsoft.ArtifactSigning.Client', 'Microsoft.Trusted.Signing.Client') {
+        Write-Host "Downloading the Artifact Signing client ($name from nuget.org)..." -ForegroundColor Cyan
+        try {
+            Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/$name" -OutFile $package -UseBasicParsing
+            $downloaded = $true
+            break
+        } catch {
+            Write-Host "  failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+    if (-not $downloaded) { throw 'Could not download the Artifact Signing client package from nuget.org.' }
+
+    Expand-Archive -Path $package -DestinationPath $dir -Force
+    Remove-Item $package -Force
+
+    $dlib = Get-ChildItem $dir -Recurse -Filter Azure.CodeSigning.Dlib.dll | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+    if (-not $dlib) { throw 'The Artifact Signing client package did not contain bin\x64\Azure.CodeSigning.Dlib.dll.' }
+    return $dlib.FullName
+}
+
+# The signtool arguments shared by every file we sign: SHA-256 digest, RFC 3161 timestamp, the way
+# to reach the key, and the product name and URL Windows shows in its security prompts.
 function Get-SignArguments {
     $arguments = @('sign', '/fd', 'SHA256')
     if ($TimestampUrl) { $arguments += @('/tr', $TimestampUrl, '/td', 'SHA256') }
-    if ($CertificateThumbprint) {
+    if ($artifactSigning) {
+        $arguments += @('/dlib', $script:artifactSigningDlib, '/dmdf', $script:artifactSigningMetadata)
+    } elseif ($CertificateThumbprint) {
         $arguments += @('/sha1', $CertificateThumbprint)
     } else {
         $arguments += @('/f', $PfxPath)
@@ -252,10 +312,35 @@ if (-not $Version) {
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 $Output = (Resolve-Path $Output).Path
 
-$signing = [bool]($CertificateThumbprint -or $PfxPath)
+$artifactSigning = [bool]($ArtifactSigningEndpoint -and $ArtifactSigningAccount -and $ArtifactSigningProfile)
+$signing = [bool]($CertificateThumbprint -or $PfxPath -or $artifactSigning -or $SignCommand)
 if ($PfxPath) {
     if (-not (Test-Path $PfxPath)) { throw "Certificate file not found: $PfxPath" }
     $PfxPath = (Resolve-Path $PfxPath).Path
+}
+if ($SignCommand -and $SignCommand -notmatch '\$f') {
+    throw 'SignCommand must contain $f where the file to sign goes.'
+}
+if ($artifactSigning) {
+    # The service issues short-lived certificates; Microsoft's own timestamp server is the one to
+    # pair them with, unless the caller chose another.
+    if (-not $PSBoundParameters.ContainsKey('TimestampUrl')) { $TimestampUrl = 'http://timestamp.acs.microsoft.com' }
+
+    $script:artifactSigningDlib = Get-ArtifactSigningDlib
+    $script:artifactSigningMetadata = Join-Path (Split-Path $script:artifactSigningDlib -Parent) 'driftwall-metadata.json'
+
+    # The plug-in runs on .NET 8 or later, which signtool locates through DOTNET_ROOT or the
+    # machine-wide install. A per-user SDK (the no-admin route in the README) is neither, so point
+    # at it when that is all there is.
+    if (-not $env:DOTNET_ROOT -and -not (Test-Path "$env:ProgramFiles\dotnet\dotnet.exe") -and (Test-Path "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe")) {
+        $env:DOTNET_ROOT = "$env:LOCALAPPDATA\Microsoft\dotnet"
+    }
+    @{
+        Endpoint = $ArtifactSigningEndpoint
+        CodeSigningAccountName = $ArtifactSigningAccount
+        CertificateProfileName = $ArtifactSigningProfile
+    } | ConvertTo-Json | Set-Content -Path $script:artifactSigningMetadata -Encoding ascii
+    Write-Host "Artifact Signing: $ArtifactSigningAccount / $ArtifactSigningProfile at $ArtifactSigningEndpoint"
 }
 
 # Windows version resources hold four numbers, so a pre-release tag such as 1.1.0-beta is dropped
@@ -285,17 +370,40 @@ if ($RegenerateArt -or -not (Test-Path (Join-Path $artDir 'wizard-mark-100.png')
 
 $signTool = $null
 if ($signing) {
-    $signTool = Find-SignTool
-    Write-Host "signtool:   $signTool"
+    if ($SignCommand) {
+        # The caller's own tool. The Inno notation is turned back into a plain command line here;
+        # Inno does the same itself when it signs the wizard and the uninstaller.
+        $localCommand = $SignCommand.Replace('$f', "`"$Source`"").Replace('$q', '"').Replace('$$', '$')
+        Write-Host 'sign tool:  (custom command)'
+    } else {
+        $signTool = Find-SignTool
+        Write-Host "signtool:   $signTool"
+    }
     Write-Host "Signing $Source" -ForegroundColor Cyan
     # Timestamp servers have off moments; Inno retries its own signing, so this does too.
     $attempt = 0
     do {
         $attempt++
-        & $signTool @(Get-SignArguments) $Source | Out-Null
+        # The tool's output is kept for the failure message only; signtool never echoes the command
+        # line, so a password given on it does not end up in the log. Its stderr must not be promoted
+        # to a terminating error here (Windows PowerShell does that under 'Stop'), hence the switch.
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        # (Not "$output": PowerShell names are case-insensitive and that is the -Output folder.)
+        if ($SignCommand) {
+            $signOutput = (& cmd.exe /d /c $localCommand 2>&1 | ForEach-Object { "$_" }) -join "`n"
+        } else {
+            $signOutput = (& $signTool @(Get-SignArguments) $Source 2>&1 | ForEach-Object { "$_" }) -join "`n"
+        }
+        $ErrorActionPreference = $previousPreference
         if ($LASTEXITCODE -eq 0) { break }
-        if ($attempt -ge 3) { throw "signtool failed on $Source after $attempt attempts (exit code $LASTEXITCODE)." }
-        Write-Host "  signtool failed (exit code $LASTEXITCODE); retrying in 5 s..." -ForegroundColor Yellow
+        # The plug-ins print .NET stack traces and raw HTTP headers; the lines worth reading are the
+        # ones that are neither "at ..." frames nor "Header: value" pairs.
+        $reason = ($signOutput -split "`r?`n" |
+            Where-Object { $_ -match '\S' -and $_ -notmatch '^\s+at ' -and $_ -notmatch '^[A-Za-z][A-Za-z0-9-]*: ' -and $_ -notmatch '^\s*---' } |
+            Select-Object -Last 5) -join "`n"
+        if ($attempt -ge 3) { throw "Signing $Source failed after $attempt attempts (exit code $LASTEXITCODE):`n$reason" }
+        Write-Host "  signing failed (exit code $LASTEXITCODE); retrying in 5 s...`n$reason" -ForegroundColor Yellow
         Start-Sleep -Seconds 5
     } while ($true)
 } else {
@@ -314,12 +422,24 @@ if ($signing) {
     # Inno Setup signs Setup and the uninstaller through a named sign tool. The name is passed to
     # the script as a define so an unsigned build compiles without any SignTool directive at all.
     # $f stands for the file being signed; see the SignTool help topic.
-    $command = ((@($signTool) + (Get-SignArguments) | ForEach-Object { ConvertTo-InnoArgument $_ }) -join ' ') + ' $f'
+    $command = if ($SignCommand) { $SignCommand } else {
+        ((@($signTool) + (Get-SignArguments) | ForEach-Object { ConvertTo-InnoArgument $_ }) -join ' ') + ' $f'
+    }
     $arguments += @("/Sdriftwall=$command", '/DSignToolName=driftwall')
 }
 
-& $iscc @arguments "$PSScriptRoot\Driftwall.iss"
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }
+# The compiler reports errors on stderr, which Windows PowerShell would turn into a terminating
+# error before the exit code is examined; capture everything and decide from the exit code.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$compileOutput = (& $iscc @arguments "$PSScriptRoot\Driftwall.iss" 2>&1 | ForEach-Object { "$_" })
+$ErrorActionPreference = $previousPreference
+$compileOutput | Where-Object { $_ -match '\S' } | ForEach-Object { Write-Host $_ }
+if ($LASTEXITCODE -ne 0) {
+    # Show what the compiler was given, with any password on the sign command masked.
+    $shown = $arguments | ForEach-Object { $_ -replace '(/p\s+)\S+', '$1***' }
+    throw "Inno Setup failed with exit code $LASTEXITCODE. Arguments were:`n  $($shown -join "`n  ")"
+}
 
 $setupExe = Join-Path $Output "DriftwallSetup-$Version.exe"
 if (-not (Test-Path $setupExe)) { throw "Expected $setupExe but it was not produced." }

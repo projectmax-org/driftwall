@@ -119,34 +119,53 @@ shortcuts; upload that file as the depot content.
 
 ### The "Unknown publisher" warning
 
-Windows labels any executable without an Authenticode signature "Unknown publisher" (SmartScreen,
-the Open File security warning, Edge's download prompt). Version metadata alone does not change
-that; only a signature from a certificate authority does. The build is ready for one:
+Windows labels any executable without an Authenticode signature "Unknown publisher": in the
+SmartScreen dialog, in Edge's download prompt, and in the UAC prompt if one is ever needed. Version
+metadata does not change that; only a signature from a certificate authority does. The build is
+ready for one, and signs `Driftwall.exe`, the setup wizard and the uninstaller with an RFC 3161
+timestamp so the signatures outlive the certificate:
 
 ```powershell
 .\build.ps1 -Installer -CertificateThumbprint <sha1 of a code-signing certificate in your store>
 ```
 
-That signs `Driftwall.exe`, the setup wizard and the uninstaller, with an RFC 3161 timestamp so the
-signatures outlive the certificate. A `.pfx` file works too (`-PfxPath`, `-PfxPassword`; the
-password is visible to other local processes while signing runs, so prefer the certificate store),
-and both can be supplied through `DRIFTWALL_SIGN_THUMBPRINT` or `DRIFTWALL_SIGN_PFX` in the
-environment on a build machine. `signtool.exe` is taken from an installed Windows SDK or fetched from
-Microsoft's `Microsoft.Windows.SDK.BuildTools` package.
+Four ways to supply the signature, all of them also readable from the environment so the release
+workflow can use repository secrets:
 
-Where to get a certificate, cheapest first. SmartScreen reputation is earned by downloads over time
-with any of them; Microsoft no longer promises an instant pass for a particular kind of certificate.
+| Option | What it takes | Fits GitHub Actions |
+|---|---|---|
+| `-ArtifactSigningEndpoint`, `-ArtifactSigningAccount`, `-ArtifactSigningProfile` | Microsoft's Artifact Signing service (formerly Trusted Signing) plus Azure credentials in `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | Yes, wired into `release.yml` |
+| `-CertificateThumbprint` | A certificate in your Windows store, including one on a hardware token or a CA's cloud signer | Only on your own machine |
+| `-SignCommand` | Any signing tool's command line with `$f` for the file, for example SSL.com's `CodeSignTool` | If the tool is installed on the runner |
+| `-PfxPath`, `-PfxPassword` | A `.pfx` file | Yes, but CAs no longer issue exportable keys |
 
-- **Trusted Signing** — Microsoft's own service, part of Azure, billed monthly, open to organisations
-  and to individuals in supported countries after identity validation. It signs through `signtool`
-  with a `/dlib` plug-in instead of a certificate, a small extension to `Get-SignArguments` in
-  `build-installer.ps1`.
-- **OV code-signing certificate** from a CA such as Certum, SSL.com or Sectigo — a yearly fee, the
-  key lives on a hardware token or in a cloud HSM.
-- **EV certificate** — the same, dearer, with stricter identity checks.
+What a signature does and does not do (all checked against Microsoft's documentation in September
+2026): it replaces "Unknown" with a **Verified publisher** line and lets Smart App Control run the
+app, but the SmartScreen warning itself only goes away as downloads accumulate over weeks. No kind
+of certificate skips that any more, EV included, since 2024. A self-signed certificate does nothing
+for users: Windows trusts the chain, not the name.
 
-A self-signed certificate does not help: Windows only trusts the chain, not the name, so users still
-see the warning.
+**Whose name appears.** A certificate carries the *validated* legal name and nothing else; no
+authority lets you type a brand in. "Project Max" shows as the publisher only once Project Max is a
+registered trade name. In Korea that is a sole-proprietor registration (개인사업자 사업자등록, at
+the tax office or on Hometax, with 상호 "Project Max"), after which an organisation-validated
+certificate can carry it, subject to each authority's checks. Until then any certificate shows the
+person's own name.
+
+Where to get one, as of September 2026, with what it prints:
+
+- **Microsoft Artifact Signing**, about USD 10 a month on a paid Azure subscription. Organisations
+  in South Korea are eligible; individual developers are accepted only from the United States and
+  Canada. Prints the validated organisation name. Signs from GitHub Actions with no key to store;
+  the runner needs the .NET 8 runtime, which the workflow installs.
+- **SSL.com**, about USD 129 a year for an individual or organisation certificate, plus its eSigner
+  cloud signing (about USD 20 a month) if you want to sign from CI; otherwise a hardware key. Prints
+  your personal name, or the organisation's with a business registration.
+- **Certum "Open Source Code Signing"**, about EUR 49 a year with cloud signing or EUR 69 with a
+  card. Cheapest, but it prints "Open Source Developer, Your Name", needs its phone app for each
+  signing session, and may be revoked if used for commercial software.
+- **Sectigo, DigiCert and resellers**, roughly USD 220 to 540 a year, hardware token included.
+  Organisation certificates print the registered trade name.
 
 ## Building
 

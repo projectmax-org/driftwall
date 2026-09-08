@@ -17,7 +17,10 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          # 10 builds the app; 8 is what the Artifact Signing plug-in for signtool runs on.
+          dotnet-version: |
+            10.0.x
+            8.0.x
 
       - name: Check the tag matches the project version
         shell: pwsh
@@ -26,8 +29,22 @@ jobs:
           $version = ([xml](Get-Content src/Driftwall/Driftwall.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
           if ($tag -ne $version) { throw "Tag $tag does not match <Version> $version in Driftwall.csproj. Bump the csproj first." }
 
-      # Optional code signing. Store the .pfx as a base64 secret (DRIFTWALL_SIGN_PFX_BASE64) and its
-      # password as DRIFTWALL_SIGN_PFX_PASSWORD; without them the release is simply unsigned.
+      # Optional code signing, two routes; with neither configured the release is simply unsigned.
+      # See "The Unknown publisher warning" in the README for what each needs.
+      #
+      # 1. Microsoft Artifact Signing (no key to keep anywhere). Repository secrets:
+      #      DRIFTWALL_ARTIFACT_SIGNING_ENDPOINT   the regional endpoint, e.g. https://krc.codesigning.azure.net
+      #      DRIFTWALL_ARTIFACT_SIGNING_ACCOUNT    the Artifact Signing account name
+      #      DRIFTWALL_ARTIFACT_SIGNING_PROFILE    the certificate profile name
+      #      AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+      #                              a service principal with the "Artifact Signing Certificate
+      #                              Profile Signer" role on that certificate profile
+      #    The build step below reads them from the environment and signs the app, the wizard and
+      #    the uninstaller through installer\build-installer.ps1.
+      #
+      # 2. A .pfx file (only for keys that were allowed to leave their hardware, which certificate
+      #    authorities no longer issue): DRIFTWALL_SIGN_PFX_BASE64 holds the file base64-encoded and
+      #    DRIFTWALL_SIGN_PFX_PASSWORD its password.
       - name: Prepare signing certificate
         if: ${{ env.PFX_BASE64 != '' }}
         shell: pwsh
@@ -41,6 +58,12 @@ jobs:
       - name: Build app and installer
         shell: pwsh
         env:
+          DRIFTWALL_ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.DRIFTWALL_ARTIFACT_SIGNING_ENDPOINT }}
+          DRIFTWALL_ARTIFACT_SIGNING_ACCOUNT: ${{ secrets.DRIFTWALL_ARTIFACT_SIGNING_ACCOUNT }}
+          DRIFTWALL_ARTIFACT_SIGNING_PROFILE: ${{ secrets.DRIFTWALL_ARTIFACT_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           DRIFTWALL_SIGN_PFX_PASSWORD: ${{ secrets.DRIFTWALL_SIGN_PFX_PASSWORD }}
         run: .\build.ps1 -Installer
 
