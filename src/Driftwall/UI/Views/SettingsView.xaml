@@ -964,7 +964,62 @@
                 </Border>
 
                 <!-- ============================================================
-                     CARD 7 - About
+                     CARD 7 - Updates
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="UPDATES" Style="{StaticResource Text.SectionLabel}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Install updates automatically" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Driftwall looks for a new version once a day and installs it in the background while the window is closed, never during a game."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding AutoUpdate}" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="{Binding UpdateStatus}" Style="{StaticResource Text.Subheading}" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding UpdateDetail}" Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                <ProgressBar Height="3" Margin="0,8,0,0" Minimum="0" Maximum="100"
+                                             Value="{Binding UpdateProgress, Mode=OneWay}"
+                                             Visibility="{Binding ShowUpdateProgress, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Style="{StaticResource Button.Ghost}"
+                                        Content="What's new"
+                                        Command="{Binding OpenReleaseNotesCommand}"
+                                        Visibility="{Binding IsUpdateAvailable, Converter={StaticResource BoolToVisibility}}" />
+                                <Button Style="{StaticResource Button.Base}" Margin="6,0,0,0"
+                                        Content="Check now"
+                                        Command="{Binding CheckForUpdatesCommand}" />
+                                <Button Style="{StaticResource Button.Accent}" Margin="6,0,0,0"
+                                        Content="{Binding InstallButtonLabel}"
+                                        Command="{Binding InstallUpdateCommand}"
+                                        Visibility="{Binding IsUpdateAvailable, Converter={StaticResource BoolToVisibility}}" />
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 8 - About
                      ============================================================ -->
                 <Border Style="{StaticResource Card}" Margin="0,0,0,4">
                     <StackPanel>

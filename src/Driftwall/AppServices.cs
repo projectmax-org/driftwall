@@ -29,6 +29,7 @@ public sealed class AppServices : IDisposable
         Engine = new WallpaperEngine(Cache);
         Rotation = new RotationService(Settings, Sources, Cache, Engine);
         Scheduler = new RotationScheduler(Settings, Rotation, Engine);
+        Updates = new UpdateService(Settings, Net.Client);
         Tray = new TrayIcon();
 
         MemoryTrimmer.Enabled = Settings.Settings.AggressiveMemoryTrim;
@@ -46,6 +47,7 @@ public sealed class AppServices : IDisposable
     public WallpaperEngine Engine { get; }
     public RotationService Rotation { get; }
     public RotationScheduler Scheduler { get; }
+    public UpdateService Updates { get; }
     public TrayIcon Tray { get; }
 
     public static AppServices Initialize()
@@ -70,6 +72,7 @@ public sealed class AppServices : IDisposable
         Settings.Changed -= OnSettingsChanged;
 
         Tray.Dispose();
+        Updates.Dispose();
         Scheduler.Dispose();
         Rotation.Dispose();
         Collections.Dispose();

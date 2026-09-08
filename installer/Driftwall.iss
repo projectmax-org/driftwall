@@ -171,11 +171,25 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchTask,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; An in-app update runs this wizard silently with /RELAUNCH=1 (start hidden, as at sign-in) or
+; /RELAUNCH=2 (start with the window), so the new version comes back the way the user last saw it.
+Filename: "{app}\{#AppExe}"; Parameters: "--minimized"; Flags: nowait runasoriginaluser; Check: RelaunchHidden
+Filename: "{app}\{#AppExe}"; Parameters: "--show"; Flags: nowait runasoriginaluser; Check: RelaunchVisible
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExe} /F"; Flags: runhidden; RunOnceId: "StopDriftwall"
 
 [Code]
+function RelaunchHidden: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
+function RelaunchVisible: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '2';
+end;
+
 // A tray app has no window for the Restart Manager to close, so stop it explicitly before the
 // files are replaced. taskkill returns non-zero when nothing is running; that is fine.
 function PrepareToInstall(var NeedsRestart: Boolean): String;

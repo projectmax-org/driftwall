@@ -27,6 +27,9 @@ public static class Paths
     /// <summary>Full-size copies of photos the user saved to a collection, kept independent of the cache.</summary>
     public static string SavedDirectory => EnsureDirectory(Path.Combine(DataDirectory, "saved"));
 
+    /// <summary>Downloaded releases waiting to be installed, and the script that applies them.</summary>
+    public static string UpdatesDirectory => EnsureDirectory(Path.Combine(DataDirectory, "updates"));
+
     public static string EnsureDirectory(string path)
     {
         if (!Directory.Exists(path)) Directory.CreateDirectory(path);

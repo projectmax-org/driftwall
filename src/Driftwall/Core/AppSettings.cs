@@ -143,8 +143,21 @@ public sealed class AppSettings
     public double MinResolutionRatio { get; set; } = 0.65;
 
     // ---------- Behaviour / performance ----------
-    public bool StartWithWindows { get; set; }
+
+    /// <summary>
+    /// On by default: a wallpaper app that does not start with Windows is not doing its job. The
+    /// registry entry is created on the first run; after that the Run key is the truth and this
+    /// only records the last choice made in Settings.
+    /// </summary>
+    public bool StartWithWindows { get; set; } = true;
     public bool StartMinimized { get; set; } = true;
+
+    // ---------- Updates ----------
+
+    /// <summary>Download new releases and install them while the window is closed.</summary>
+    public bool AutoUpdate { get; set; } = true;
+
+    public DateTimeOffset? LastUpdateCheckUtc { get; set; }
     public bool ShowTrayIcon { get; set; } = true;
     public bool CloseToTray { get; set; } = true;
 

@@ -117,6 +117,16 @@ switches for unattended use:
 **For Steam** — nothing. Steam installs the portable `dist\Driftwall.exe` itself and manages
 shortcuts; upload that file as the depot content.
 
+### Updates
+
+Driftwall checks the [releases page](https://github.com/projectmax-org/driftwall/releases) once a
+day, a couple of minutes after it starts. With **Install updates automatically** on (the default) a
+new version is downloaded, checked against the SHA-256 sums published with the release, and
+installed while the window is closed and no fullscreen app is running; the app comes back on its
+own. With it off, a notification says a version is waiting and Settings → Updates installs it on
+request. An installed copy updates by running the setup wizard silently; a portable copy is swapped
+in place. If the running copy is signed, a download signed by anyone else is refused.
+
 ### The "Unknown publisher" warning
 
 Windows labels any executable without an Authenticode signature "Unknown publisher": in the

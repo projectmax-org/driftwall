@@ -83,7 +83,11 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
 
             // Refresh the things that go stale while the user is looking elsewhere.
             if (value == AppSection.Displays) Displays.Refresh();
-            if (value == AppSection.Settings) Settings.RefreshCacheSize();
+            if (value == AppSection.Settings)
+            {
+                Settings.RefreshCacheSize();
+                Settings.RefreshUpdateStatus();
+            }
         }
     }
 

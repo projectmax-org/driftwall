@@ -45,6 +45,8 @@ public sealed class TrayIcon : IDisposable
     public event EventHandler? Selected;
     public event EventHandler? DoubleClicked;
     public event EventHandler? MiddleClicked;
+    /// <summary>The user clicked a notification shown with <see cref="ShowBalloon"/>.</summary>
+    public event EventHandler? BalloonClicked;
 
     public bool IsVisible => _added;
 
@@ -160,6 +162,11 @@ public sealed class TrayIcon : IDisposable
             case NativeConstants.NIN_KEYSELECT:
                 // What a click on a tray icon does on Windows 11: the primary action, no double-click needed.
                 Selected?.Invoke(this, EventArgs.Empty);
+                handled = true;
+                break;
+
+            case NativeConstants.NIN_BALLOONUSERCLICK:
+                BalloonClicked?.Invoke(this, EventArgs.Empty);
                 handled = true;
                 break;
 
@@ -313,6 +320,7 @@ public sealed class TrayIcon : IDisposable
         // Version-4 notifications: WM_USER + 0 and + 1.
         public const int NIN_SELECT = 0x0400;
         public const int NIN_KEYSELECT = 0x0401;
+        public const int NIN_BALLOONUSERCLICK = 0x0405;
 
         public const uint NIM_ADD = 0x00;
         public const uint NIM_MODIFY = 0x01;

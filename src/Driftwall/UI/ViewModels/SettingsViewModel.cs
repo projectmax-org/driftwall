@@ -263,6 +263,17 @@ public sealed class SettingsViewModel : ViewModelBase
         OpenLogCommand = new RelayCommand(() => Shell.OpenFolder(Log.LogPath, selectFile: true));
         OpenWebsiteCommand = new RelayCommand(() => Shell.OpenUrl(WebsiteUrl));
         OpenSourceCodeCommand = new RelayCommand(() => Shell.OpenUrl(RepositoryUrl));
+
+        CheckForUpdatesCommand = new AsyncRelayCommand(() => services.Updates.CheckAsync(), () => !IsUpdateBusy);
+        InstallUpdateCommand = new AsyncRelayCommand(() => services.Updates.InstallLatestAsync(relaunchVisible: true), () => !IsUpdateBusy);
+        OpenReleaseNotesCommand = new RelayCommand(() => Shell.OpenUrl(services.Updates.Available?.ReleaseUrl ?? UpdateService.ReleasesUrl));
+        services.Updates.Changed += (_, _) => System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Raise(nameof(UpdateStatus), nameof(UpdateDetail), nameof(IsUpdateAvailable), nameof(IsUpdateBusy),
+                  nameof(ShowUpdateProgress), nameof(UpdateProgress), nameof(InstallButtonLabel));
+            (CheckForUpdatesCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+            (InstallUpdateCommand as AsyncRelayCommand)?.RaiseCanExecuteChanged();
+        }));
         ResetSourcesCommand = new RelayCommand(ResetSources);
 
         ApiKeys = new ObservableCollection<ApiKeyViewModel>(
@@ -553,6 +564,53 @@ public sealed class SettingsViewModel : ViewModelBase
     public ICommand OpenWebsiteCommand { get; }
     public ICommand OpenSourceCodeCommand { get; }
 
+    // ---------------- updates ----------------
+
+    public ICommand CheckForUpdatesCommand { get; }
+    public ICommand InstallUpdateCommand { get; }
+    public ICommand OpenReleaseNotesCommand { get; }
+
+    public bool AutoUpdate
+    {
+        get => S.AutoUpdate;
+        set { _services.Settings.Update(s => s.AutoUpdate = value); OnPropertyChanged(); }
+    }
+
+    private UpdateService Updates => _services.Updates;
+
+    public string UpdateStatus => Updates.State switch
+    {
+        UpdateState.Idle => $"Driftwall {UpdateService.CurrentVersion}",
+        _ => Updates.Message ?? $"Driftwall {UpdateService.CurrentVersion}",
+    };
+
+    public string UpdateDetail
+    {
+        get
+        {
+            var last = Updates.LastChecked;
+            var when = last is null ? "Not checked yet." : "Last checked " + Describe(DateTimeOffset.UtcNow - last.Value) + ".";
+            return when + " Releases come from GitHub and are verified against their published checksums.";
+        }
+    }
+
+    public bool IsUpdateAvailable => Updates.State is UpdateState.Available or UpdateState.Ready;
+    public bool IsUpdateBusy => Updates.State is UpdateState.Checking or UpdateState.Downloading or UpdateState.Installing;
+    public bool ShowUpdateProgress => Updates.State == UpdateState.Downloading;
+    public double UpdateProgress => Updates.Progress * 100;
+
+    public string InstallButtonLabel => Updates.State == UpdateState.Ready
+        ? "Restart to update"
+        : "Install " + (Updates.Available?.Version.ToString() ?? "update");
+
+    private static string Describe(TimeSpan ago) => ago.TotalMinutes < 1
+        ? "just now"
+        : ago.TotalHours < 1
+            ? $"{(int)ago.TotalMinutes} min ago"
+            : ago.TotalDays < 1
+                ? $"{(int)ago.TotalHours} h ago"
+                : $"{(int)ago.TotalDays} d ago";
+
     /// <summary>Driftwall is a Project Max application; these are the project's public places.</summary>
     public const string WebsiteUrl = "https://projectmax-org.github.io/driftwall/";
     public const string RepositoryUrl = "https://github.com/projectmax-org/driftwall";
@@ -651,6 +709,10 @@ public sealed class SettingsViewModel : ViewModelBase
 
     /// <summary>Called when rotation is paused or resumed from the header or the tray menu.</summary>
     public void OnPauseChangedExternally() => OnPropertyChanged(nameof(RotationEnabled));
+
+    /// <summary>Called when the Settings page comes into view, so "last checked" reads right.</summary>
+    public void RefreshUpdateStatus() =>
+        Raise(nameof(UpdateStatus), nameof(UpdateDetail), nameof(IsUpdateAvailable), nameof(InstallButtonLabel));
 
     public void RefreshCacheSize()
     {
