@@ -31,7 +31,7 @@
 #define AppExe "Driftwall.exe"
 ; Driftwall is a Project Max application: the project is the publisher, the app is the product.
 #define AppPublisher "Project Max"
-#define AppUrl "https://projectmax.app/driftwall"
+#define AppUrl "https://projectmax-org.github.io/driftwall/"
 #define AppRepo "https://github.com/projectmax-org/driftwall"
 #define AppCopyright "Copyright © 2026 Project Max"
 
@@ -42,7 +42,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
-AppPublisherURL=https://projectmax.app
+AppPublisherURL=https://projectmax-org.github.io
 AppSupportURL={#AppRepo}/issues
 AppUpdatesURL={#AppRepo}/releases
 AppCopyright={#AppCopyright}

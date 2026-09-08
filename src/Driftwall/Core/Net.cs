@@ -7,7 +7,7 @@ namespace Driftwall.Core;
 /// <summary>Shared HTTP plumbing. One pooled handler for the whole process.</summary>
 public static class Net
 {
-    public const string UserAgent = "Driftwall/1.0 (+https://projectmax.app/driftwall)";
+    public const string UserAgent = "Driftwall/1.0 (+https://projectmax-org.github.io/driftwall/)";
 
     private static readonly Lazy<HttpClient> _client = new(() =>
     {

@@ -212,7 +212,7 @@ function Get-SignArguments {
         $arguments += @('/f', $PfxPath)
         if ($PfxPassword) { $arguments += @('/p', $PfxPassword) }
     }
-    $arguments += @('/d', 'Driftwall', '/du', 'https://projectmax.app/driftwall')
+    $arguments += @('/d', 'Driftwall', '/du', 'https://projectmax-org.github.io/driftwall/')
     return $arguments
 }
 

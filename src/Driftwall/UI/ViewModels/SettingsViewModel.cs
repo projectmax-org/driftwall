@@ -554,7 +554,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public ICommand OpenSourceCodeCommand { get; }
 
     /// <summary>Driftwall is a Project Max application; these are the project's public places.</summary>
-    public const string WebsiteUrl = "https://projectmax.app/driftwall";
+    public const string WebsiteUrl = "https://projectmax-org.github.io/driftwall/";
     public const string RepositoryUrl = "https://github.com/projectmax-org/driftwall";
     public ICommand ResetSourcesCommand { get; }
 

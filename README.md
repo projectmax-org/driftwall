@@ -6,10 +6,10 @@ schedule you choose, across as many monitors as you have.
 Built to be invisible when you aren't using it: it sits in the notification area doing nothing
 between changes, and gets out of the way entirely while you're gaming.
 
-Driftwall is a [Project Max](https://projectmax.app) application: free, open source under the
+Driftwall is a [Project Max](https://projectmax-org.github.io) application: free, open source under the
 [MIT licence](LICENSE), no account, no telemetry. Download the latest release from the
 [releases page](https://github.com/projectmax-org/driftwall/releases/latest); the app's own page is
-at [projectmax.app/driftwall](https://projectmax.app/driftwall).
+at [projectmax-org.github.io/driftwall](https://projectmax-org.github.io/driftwall/).
 
 ---
 

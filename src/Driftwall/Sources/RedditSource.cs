@@ -29,7 +29,7 @@ public sealed class RedditSource : PhotoSourceBase
     private const string TokenEndpoint = "https://www.reddit.com/api/v1/access_token";
 
     /// <summary>Reddit documents "platform:app id:version"; its filters drop the generic <see cref="Net.UserAgent"/>.</summary>
-    private const string RedditUserAgent = "windows:org.projectmax.driftwall:v1.0 (+https://projectmax.app/driftwall)";
+    private const string RedditUserAgent = "windows:org.projectmax.driftwall:v1.0 (+https://projectmax-org.github.io/driftwall/)";
 
     /// <summary>Reddit caps a listing's <c>limit</c> at 100.</summary>
     private const int ListingLimit = 100;

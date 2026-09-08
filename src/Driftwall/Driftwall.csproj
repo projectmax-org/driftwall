@@ -16,7 +16,7 @@
     <AssemblyTitle>Driftwall</AssemblyTitle>
     <Description>Desktop wallpaper switcher for Windows: photos from the web and your own folders, on a schedule, on every monitor.</Description>
     <Copyright>Copyright © 2026 Project Max</Copyright>
-    <PackageProjectUrl>https://projectmax.app/driftwall</PackageProjectUrl>
+    <PackageProjectUrl>https://projectmax-org.github.io/driftwall/</PackageProjectUrl>
     <RepositoryUrl>https://github.com/projectmax-org/driftwall</RepositoryUrl>
     <Version>1.0.0</Version>
     <FileVersion>1.0.0.0</FileVersion>
