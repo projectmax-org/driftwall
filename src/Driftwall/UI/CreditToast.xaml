@@ -1,0 +1,61 @@
+<Window x:Class="Driftwall.UI.CreditToast"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight"
+        Focusable="False"
+        UseLayoutRounding="True">
+
+    <!-- Transparency is acceptable here where it is not for the main window: the toast is tiny,
+         lives for four seconds, and needs a rounded shadow over an arbitrary desktop. -->
+    <Border x:Name="Card"
+            Margin="16"
+            CornerRadius="{StaticResource CornerRadius.Large}"
+            Background="{DynamicResource Brush.Elevated}"
+            BorderBrush="{DynamicResource Brush.Border}"
+            BorderThickness="1"
+            Padding="0"
+            Opacity="0"
+            Cursor="Hand">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="26" ShadowDepth="7" Opacity="0.42" Color="Black" />
+        </Border.Effect>
+        <Border.RenderTransform>
+            <TranslateTransform x:Name="Slide" Y="12" />
+        </Border.RenderTransform>
+
+        <Grid MaxWidth="380">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Width="74" Height="60"
+                    CornerRadius="13,0,0,13" ClipToBounds="True">
+                <Grid>
+                    <Border Background="{DynamicResource Brush.SurfaceAlt}" />
+                    <Image x:Name="Preview" Stretch="UniformToFill"
+                           RenderOptions.BitmapScalingMode="HighQuality" />
+                </Grid>
+            </Border>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="13,0,15,0">
+                <TextBlock x:Name="TitleText"
+                           FontSize="12.5" FontWeight="SemiBold"
+                           Foreground="{DynamicResource Brush.TextPrimary}"
+                           TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="CreditText"
+                           FontSize="11.5"
+                           Foreground="{DynamicResource Brush.TextSecondary}"
+                           TextTrimming="CharacterEllipsis"
+                           Margin="0,2,0,0" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

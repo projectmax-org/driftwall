@@ -1,0 +1,1022 @@
+<UserControl x:Class="Driftwall.UI.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Driftwall.UI.Controls"
+             xmlns:vm="clr-namespace:Driftwall.UI.ViewModels"
+             xmlns:sys="clr-namespace:System;assembly=System.Runtime"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:SettingsViewModel}"
+             Background="{DynamicResource Brush.Base}">
+
+    <UserControl.Resources>
+        <!-- The five ranges a provider can be asked for. Held here because the settings view model
+             exposes the selected value but no list to choose it from. -->
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ==================== Header ==================== -->
+        <Border Grid.Row="0" Padding="20,16,20,14"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,0,1">
+            <StackPanel MaxWidth="900">
+                <TextBlock Text="Settings" Style="{StaticResource Text.Title}" />
+                <TextBlock Text="Where your photos come from, when they change, and how they are rendered."
+                           Style="{StaticResource Text.Body}" Margin="0,4,0,0" />
+
+                <Border Background="{DynamicResource Brush.AccentSoft}"
+                        CornerRadius="{StaticResource CornerRadius.Small}"
+                        Padding="10,6" Margin="0,11,0,0"
+                        HorizontalAlignment="Left"
+                        Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibility}}">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Info}"
+                              Stroke="{DynamicResource Brush.Accent}" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   Style="{StaticResource Text.Caption}"
+                                   Foreground="{DynamicResource Brush.TextSecondary}"
+                                   TextWrapping="Wrap" MaxWidth="720"
+                                   Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- ==================== Everything else scrolls ==================== -->
+        <ScrollViewer Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="20">
+            <StackPanel MaxWidth="900">
+
+                <!-- ============================================================
+                     CARD 1 - Your sources
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="YOUR SOURCES" Style="{StaticResource Text.SectionLabel}" />
+                        <TextBlock Text="Driftwall picks the next wallpaper from the sources switched on here."
+                                   Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,-4,0,12" />
+
+                        <ItemsControl ItemsSource="{Binding Sources}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Style="{StaticResource Card}"
+                                            Background="{DynamicResource Brush.SurfaceAlt}"
+                                            Padding="14" Margin="0,0,0,10">
+                                        <StackPanel>
+
+                                            <!-- Row 1: on/off, name, what it is set to, remove -->
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <ToggleButton Grid.Column="0"
+                                                              Style="{StaticResource Switch}"
+                                                              IsChecked="{Binding Enabled}"
+                                                              VerticalAlignment="Center"
+                                                              ToolTip="Use this source in the rotation" />
+
+                                                <StackPanel Grid.Column="1" Margin="12,0,12,0" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding DisplayName}"
+                                                               Style="{StaticResource Text.Subheading}"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding Summary}"
+                                                               Style="{StaticResource Text.Caption}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,2,0,0" />
+                                                </StackPanel>
+
+                                                <Button Grid.Column="2"
+                                                        Style="{StaticResource Button.Danger}"
+                                                        Width="34" Height="34" Padding="0"
+                                                        VerticalAlignment="Center"
+                                                        ToolTip="Remove this source"
+                                                        Command="{Binding DataContext.RemoveSourceCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                        CommandParameter="{Binding}">
+                                                    <Path Style="{StaticResource Icon.Small}"
+                                                          Data="{DynamicResource Icon.Trash}"
+                                                          Stroke="{DynamicResource Brush.Danger}" />
+                                                </Button>
+                                            </Grid>
+
+                                            <!-- Row 2: what to fetch -->
+                                            <Grid Margin="0,12,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <ComboBox Grid.Column="0"
+                                                          MinWidth="126"
+                                                          ItemsSource="{Binding AvailableModes, Mode=OneTime}"
+                                                          SelectedItem="{Binding Mode}"
+                                                          ToolTip="What this source should fetch" />
+
+                                                <TextBox Grid.Column="1" Margin="8,0,0,0"
+                                                         Text="{Binding Keyword}"
+                                                         controls:Hint.Text="Search words"
+                                                         Visibility="{Binding IsSearchMode, Converter={StaticResource BoolToVisibility}}" />
+
+                                                <ComboBox Grid.Column="1" Margin="8,0,0,0"
+                                                          ItemsSource="{Binding Categories, Mode=OneTime}"
+                                                          SelectedItem="{Binding SelectedCategory}"
+                                                          ItemTemplate="{StaticResource Template.NameText}"
+                                                          MaxDropDownHeight="420"
+                                                          Visibility="{Binding IsCategoryMode, Converter={StaticResource BoolToVisibility}}" />
+
+                                                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="8,0,0,0"
+                                                            Visibility="{Binding SupportsTimeRange, Converter={StaticResource BoolToVisibility}}">
+                                                    <TextBlock Text="from the past"
+                                                               Style="{StaticResource Text.Caption}"
+                                                               VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                    <ComboBox ItemsSource="{Binding AvailableTimeRanges, Mode=OneTime}"
+                                                              SelectedItem="{Binding TimeRange}"
+                                                              MinWidth="96" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <!-- Row 3: how heavily this source is weighted -->
+                                            <Grid Margin="0,12,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <TextBlock Grid.Column="0"
+                                                           Text="How often this source is picked"
+                                                           Style="{StaticResource Text.Caption}"
+                                                           VerticalAlignment="Center" />
+
+                                                <Slider Grid.Column="1" Width="180" Margin="12,0,0,0"
+                                                        VerticalAlignment="Center"
+                                                        Minimum="1" Maximum="10"
+                                                        TickFrequency="1" IsSnapToTickEnabled="True"
+                                                        Value="{Binding Weight}" />
+
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding WeightLabel}"
+                                                           Style="{StaticResource Text.Caption}"
+                                                           Foreground="{DynamicResource Brush.TextSecondary}"
+                                                           MinWidth="82" TextAlignment="Right"
+                                                           Margin="12,0,0,0" VerticalAlignment="Center" />
+                                            </Grid>
+
+                                            <!-- Row 4: local folders -->
+                                            <StackPanel Margin="0,12,0,0"
+                                                        Visibility="{Binding IsLocalFolder, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="One folder per line. Sub-folders are included."
+                                                           Style="{StaticResource Text.Caption}" Margin="0,0,0,6" />
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox Grid.Column="0"
+                                                             Text="{Binding FolderList}"
+                                                             controls:Hint.Text="C:\Users\You\Pictures"
+                                                             AcceptsReturn="True"
+                                                             TextWrapping="Wrap"
+                                                             MinHeight="60"
+                                                             VerticalContentAlignment="Top"
+                                                             VerticalScrollBarVisibility="Disabled" />
+                                                    <Button Grid.Column="1" Margin="8,0,0,0"
+                                                            VerticalAlignment="Top"
+                                                            Style="{StaticResource Button.Base}"
+                                                            Command="{Binding DataContext.BrowseFolderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                            CommandParameter="{Binding}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Path Style="{StaticResource Icon.Small}"
+                                                                  Data="{DynamicResource Icon.Folder}" />
+                                                            <TextBlock Text="Add folder..." Margin="7,0,0,0"
+                                                                       VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                </Grid>
+                                            </StackPanel>
+
+                                            <!-- Row 5: rss feeds -->
+                                            <StackPanel Margin="0,12,0,0"
+                                                        Visibility="{Binding IsRssFeed, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="One feed URL per line"
+                                                           Style="{StaticResource Text.Caption}" Margin="0,0,0,6" />
+                                                <TextBox Text="{Binding FeedList}"
+                                                         controls:Hint.Text="https://example.com/photos.rss"
+                                                         AcceptsReturn="True"
+                                                         TextWrapping="Wrap"
+                                                         MinHeight="60"
+                                                         VerticalContentAlignment="Top"
+                                                         VerticalScrollBarVisibility="Disabled" />
+                                            </StackPanel>
+
+                                            <!-- What the provider's terms ask of you -->
+                                            <Border Margin="0,12,0,0" Padding="10"
+                                                    Background="#26F0B347"
+                                                    BorderBrush="{DynamicResource Brush.Warning}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="{StaticResource CornerRadius.Medium}"
+                                                    Visibility="{Binding HasTermsWarning, Converter={StaticResource BoolToVisibility}}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <Path Grid.Column="0"
+                                                          Style="{StaticResource Icon.Small}"
+                                                          Data="{DynamicResource Icon.Info}"
+                                                          Stroke="{DynamicResource Brush.Warning}"
+                                                          VerticalAlignment="Top" Margin="0,1,0,0" />
+
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{Binding TermsSummary}"
+                                                               Style="{StaticResource Text.Caption}"
+                                                               Foreground="{DynamicResource Brush.TextSecondary}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="9,0,9,0" VerticalAlignment="Center" />
+
+                                                    <Button Grid.Column="2"
+                                                            Style="{StaticResource Button.Ghost}"
+                                                            MinHeight="28" Padding="10,4"
+                                                            VerticalAlignment="Center"
+                                                            Content="Read the terms"
+                                                            Click="OnOpenTerms"
+                                                            Visibility="{Binding TermsUrl, Converter={StaticResource NullToVisibility}}" />
+                                                </Grid>
+                                            </Border>
+
+                                            <!-- A source that cannot run until it has a key says so here,
+                                                 next to its switch, instead of failing quietly in the background. -->
+                                            <Border Margin="0,12,0,0" Padding="10"
+                                                    Background="{DynamicResource Brush.AccentSoft}"
+                                                    BorderBrush="{DynamicResource Brush.Accent}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="{StaticResource CornerRadius.Medium}"
+                                                    Visibility="{Binding NeedsApiKey, Converter={StaticResource BoolToVisibility}}">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <Path Grid.Column="0"
+                                                          Style="{StaticResource Icon.Small}"
+                                                          Data="{DynamicResource Icon.Key}"
+                                                          Stroke="{DynamicResource Brush.Accent}"
+                                                          VerticalAlignment="Top" Margin="0,1,0,0" />
+
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="Needs a free API key before it can contribute a photo. Paste one under API keys, further down this page."
+                                                               Style="{StaticResource Text.Caption}"
+                                                               Foreground="{DynamicResource Brush.TextSecondary}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="9,0,9,0" VerticalAlignment="Center" />
+
+                                                    <Button Grid.Column="2"
+                                                            Style="{StaticResource Button.Ghost}"
+                                                            MinHeight="28" Padding="10,4"
+                                                            VerticalAlignment="Center"
+                                                            Content="Get a key"
+                                                            Command="{Binding OpenApiKeyHelpCommand}"
+                                                            Visibility="{Binding ApiKeyHelpUrl, Converter={StaticResource NullToVisibility}}" />
+                                                </Grid>
+                                            </Border>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <!-- Empty state -->
+                        <Border Padding="0,26,0,30"
+                                Visibility="{Binding Sources.Count, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                            <StackPanel HorizontalAlignment="Center" MaxWidth="380">
+                                <Path Style="{StaticResource Icon.Large}"
+                                      Data="{DynamicResource Icon.Browse}"
+                                      Width="44" Height="44" Opacity="0.28"
+                                      Stroke="{DynamicResource Brush.TextMuted}"
+                                      HorizontalAlignment="Center" />
+                                <TextBlock Text="No sources yet"
+                                           Style="{StaticResource Text.Body}"
+                                           TextAlignment="Center" Margin="0,16,0,0" />
+                                <TextBlock Text="Driftwall has nowhere to take photos from. Pick one below and add it, or reset to the defaults."
+                                           Style="{StaticResource Text.Caption}"
+                                           TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <!-- Add / reset. Reset throws the whole list away, so it sits apart on the
+                             left; the picker and its primary action stay together on the right. -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Button Grid.Column="0"
+                                    HorizontalAlignment="Left" VerticalAlignment="Center"
+                                    Style="{StaticResource Button.Ghost}"
+                                    Content="Reset to defaults"
+                                    ToolTip="Replace the list with the sources Driftwall ships with"
+                                    Command="{Binding ResetSourcesCommand}" />
+
+                            <ComboBox Grid.Column="1" Margin="16,0,0,0"
+                                      MinWidth="240" MaxWidth="320"
+                                      ItemsSource="{Binding AddableSources}"
+                                      SelectedItem="{Binding SourceToAdd}"
+                                      ItemTemplate="{StaticResource Template.DisplayNameText}"
+                                      MaxDropDownHeight="420" />
+
+                            <Button Grid.Column="2" Margin="8,0,0,0"
+                                    Style="{StaticResource Button.Accent}"
+                                    Command="{Binding AddSourceCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Plus}"
+                                          Stroke="{DynamicResource Brush.TextOnAccent}" />
+                                    <TextBlock Text="Add source" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 2 - API keys
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="API KEYS" Style="{StaticResource Text.SectionLabel}" />
+                        <TextBlock Text="Keys are stored encrypted for your Windows account and never leave this computer."
+                                   Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,-4,0,12" />
+
+                        <ItemsControl ItemsSource="{Binding ApiKeys}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid MinHeight="48" Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       Style="{StaticResource Text.Subheading}" />
+                                            <TextBlock Text="{Binding Hint}"
+                                                       Style="{StaticResource Text.Caption}"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+
+                                        <TextBox Grid.Column="1"
+                                                 MinWidth="280"
+                                                 VerticalAlignment="Center"
+                                                 Text="{Binding Value}"
+                                                 controls:Hint.Text="Paste your key" />
+
+                                        <Path Grid.Column="2"
+                                              Style="{StaticResource Icon.Small}"
+                                              Data="{DynamicResource Icon.Check}"
+                                              Stroke="{DynamicResource Brush.Success}"
+                                              VerticalAlignment="Center" Margin="10,0,0,0"
+                                              ToolTip="This key is saved"
+                                              Visibility="{Binding IsSet, Converter={StaticResource BoolToVisibility}}" />
+
+                                        <Button Grid.Column="3" Margin="8,0,0,0"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource Button.Ghost}"
+                                                Content="Get a key"
+                                                Command="{Binding OpenHelpCommand}"
+                                                Visibility="{Binding HelpUrl, Converter={StaticResource NullToVisibility}}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock Text="None of your sources need a key. Nothing to do here."
+                                   Style="{StaticResource Text.Caption}"
+                                   TextAlignment="Center" TextWrapping="Wrap" Margin="0,14,0,10"
+                                   Visibility="{Binding ApiKeys.Count, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 3 - When to change
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="WHEN TO CHANGE" Style="{StaticResource Text.SectionLabel}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Change wallpaper automatically"
+                                           Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Turn this off to keep the current photo until you press Next yourself."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding RotationEnabled}" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <!-- Interval -->
+                        <TextBlock Text="How often" Style="{StaticResource Text.Subheading}" />
+                        <TextBlock Text="Pick one of the usual intervals, or drag the slider for anything in between."
+                                   Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,10" />
+
+                        <ItemsControl ItemsSource="{Binding IntervalPresets}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Style="{StaticResource Button.Base}"
+                                            MinHeight="30" Padding="12,5" Margin="0,0,8,8"
+                                            FontSize="12.5"
+                                            Content="{Binding Converter={StaticResource MinutesToText}}"
+                                            Click="OnIntervalPresetClick" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Grid MinHeight="42" Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0"
+                                    Minimum="0" Maximum="1440"
+                                    TickFrequency="5" IsSnapToTickEnabled="True"
+                                    Value="{Binding IntervalMinutes}"
+                                    ToolTip="Minutes between changes. All the way to the left means manual only." />
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding IntervalLabel}"
+                                       Style="{StaticResource Text.Subheading}"
+                                       MinWidth="150" TextAlignment="Right"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Change when Windows starts" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="A new photo is waiting the moment you sign in."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding ChangeOnStartup}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Change when shutting down" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="The wallpaper is swapped as the machine goes down, so the next sign-in is new."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding ChangeOnShutdown}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Change when unlocking" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Every time you come back to a locked screen."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding ChangeOnUnlock}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Shuffle the order" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Off means photos arrive in the order the source returned them."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding Shuffle}" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Avoid repeats" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="How many recent photos Driftwall remembers before one may come round again."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <Slider Grid.Column="1" Width="180" VerticalAlignment="Center"
+                                    Minimum="0" Maximum="1000"
+                                    TickFrequency="10" IsSnapToTickEnabled="True"
+                                    Value="{Binding NoRepeatWindow}" />
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding NoRepeatLabel}"
+                                       Style="{StaticResource Text.Caption}"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       MinWidth="176" TextAlignment="Right"
+                                       Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 4 - How it looks
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="HOW IT LOOKS" Style="{StaticResource Text.SectionLabel}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Theme" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="System follows the light or dark mode Windows is using."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" MinWidth="150" VerticalAlignment="Center"
+                                      ItemsSource="{Binding Themes}"
+                                      SelectedItem="{Binding Theme}" />
+                        </Grid>
+
+                        <Grid MinHeight="46" Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Accent colour" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Used for buttons, switches and highlights across the app."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                    <TextBlock Text="In use" Style="{StaticResource Text.Caption}"
+                                               VerticalAlignment="Center" />
+                                    <Border Width="16" Height="16" Margin="7,0,0,0"
+                                            CornerRadius="{StaticResource CornerRadius.Small}"
+                                            BorderBrush="{DynamicResource Brush.BorderStrong}"
+                                            BorderThickness="1"
+                                            Background="{Binding AccentColor, Converter={StaticResource StringToBrush}}" />
+                                </StackPanel>
+                            </StackPanel>
+
+                            <ItemsControl Grid.Column="1" VerticalAlignment="Center"
+                                          MaxWidth="320"
+                                          ItemsSource="{Binding AccentColors}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{StaticResource Button.Icon}"
+                                                Width="34" Height="34"
+                                                ToolTip="Use this accent colour"
+                                                Click="OnAccentClick">
+                                            <Border Width="26" Height="26"
+                                                    CornerRadius="{StaticResource CornerRadius.Small}"
+                                                    BorderBrush="{DynamicResource Brush.BorderStrong}"
+                                                    BorderThickness="2"
+                                                    Background="{Binding Converter={StaticResource StringToBrush}}" />
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Fitting and multiple displays" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Fill or Fit, what goes in the empty space, and one photo per display or spanned across them: all on the Displays tab, next to a map of your screens."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Style="{StaticResource Button.Base}" VerticalAlignment="Center"
+                                    Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    CommandParameter="Displays">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Monitor}" />
+                                    <TextBlock Text="Open Displays" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+
+                        <Grid MinHeight="46" Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Rendered quality" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Higher looks better on a large screen and takes more disk space."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <Slider Grid.Column="1" Width="180" VerticalAlignment="Center"
+                                    Minimum="60" Maximum="100"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    Value="{Binding OutputQuality}" />
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding OutputQualityLabel}"
+                                       Style="{StaticResource Text.Caption}"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       MinWidth="150" TextAlignment="Right"
+                                       Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </Grid>
+
+                        <Grid MinHeight="46" Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Show the photo credit on the wallpaper"
+                                           Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Prints the title and photographer in a corner of the rendered image."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding ShowAttributionOverlay}" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Skip photos that are too small"
+                                           Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Stops a small image being blown up across a large screen."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding RejectLowResolution}" />
+                        </Grid>
+
+                        <Grid MinHeight="42" Margin="0,4,0,0"
+                              Visibility="{Binding RejectLowResolution, Converter={StaticResource BoolToVisibility}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Slider Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0"
+                                    Minimum="0.2" Maximum="1.5"
+                                    TickFrequency="0.05" IsSnapToTickEnabled="True"
+                                    Value="{Binding MinResolutionRatio}" />
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding MinResolutionLabel}"
+                                       Style="{StaticResource Text.Caption}"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       MinWidth="250" TextAlignment="Right"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 5 - Behaviour
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="BEHAVIOUR" Style="{StaticResource Text.SectionLabel}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Start with Windows" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Driftwall launches itself when you sign in."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding StartWithWindows}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Start minimised" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="No window on startup; Driftwall just gets on with it."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding StartMinimized}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Show the tray icon" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Show the Driftwall icon in the notification area."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding ShowTrayIcon}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Close to the tray" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Closing the window keeps Driftwall running in the background."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding CloseToTray}" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Pause during fullscreen apps" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Never change wallpaper while you are gaming or watching something fullscreen."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding PauseOnFullscreenApp}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Pause on battery" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Downloading and rendering are skipped while you are unplugged."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding PauseOnBattery}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Pause on a metered connection" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Keeps Driftwall off your mobile data allowance."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding PauseOnMeteredNetwork}" />
+                        </Grid>
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Trim memory aggressively" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Release memory as soon as the window is closed."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding AggressiveMemoryTrim}" />
+                        </Grid>
+
+                        <Border Style="{StaticResource Divider}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Download ahead" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Photos fetched in advance so the next change is instant."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <Slider Grid.Column="1" Width="180" VerticalAlignment="Center"
+                                    Minimum="0" Maximum="10"
+                                    TickFrequency="1" IsSnapToTickEnabled="True"
+                                    Value="{Binding PrefetchCount}" />
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding PrefetchLabel}"
+                                       Style="{StaticResource Text.Caption}"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       MinWidth="215" TextAlignment="Right"
+                                       Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 6 - Storage
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="STORAGE" Style="{StaticResource Text.SectionLabel}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <TextBlock Text="Cache limit" Style="{StaticResource Text.Subheading}" />
+                                <TextBlock Text="Once the limit is reached the oldest downloads are deleted first."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                            </StackPanel>
+                            <Slider Grid.Column="1" Width="180" VerticalAlignment="Center"
+                                    Minimum="64" Maximum="8192"
+                                    TickFrequency="64" IsSnapToTickEnabled="True"
+                                    Value="{Binding CacheSizeMegabytes}" />
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding CacheLimitLabel}"
+                                       Style="{StaticResource Text.Caption}"
+                                       Foreground="{DynamicResource Brush.TextSecondary}"
+                                       MinWidth="230" TextAlignment="Right"
+                                       Margin="12,0,0,0" VerticalAlignment="Center" />
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding CacheUsage}"
+                                       Style="{StaticResource Text.Caption}"
+                                       VerticalAlignment="Center" />
+
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource Button.Ghost}"
+                                    Command="{Binding OpenDataFolderCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Folder}" />
+                                    <TextBlock Text="Open data folder" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+
+                            <!-- Deletes files, so it is fenced off and coloured like the other
+                                 destructive actions in the app. -->
+                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                <Border Width="1" Margin="12,4" VerticalAlignment="Stretch"
+                                        Background="{DynamicResource Brush.Border}" />
+                                <Button Style="{StaticResource Button.Danger}"
+                                        Content="Clear cache"
+                                        ToolTip="Delete every downloaded photo and thumbnail"
+                                        Command="{Binding ClearCacheCommand}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Text="{Binding DataFolder}"
+                                   Style="{StaticResource Text.Caption}"
+                                   FontFamily="Consolas, Cascadia Mono, Courier New"
+                                   TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding DataFolder}"
+                                   Margin="0,10,0,0" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ============================================================
+                     CARD 7 - About
+                     ============================================================ -->
+                <Border Style="{StaticResource Card}" Margin="0,0,0,4">
+                    <StackPanel>
+                        <TextBlock Text="ABOUT" Style="{StaticResource Text.SectionLabel}" />
+
+                        <Grid MinHeight="46">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Driftwall" Style="{StaticResource Text.Subheading}" />
+                                    <TextBlock Text="Version" Style="{StaticResource Text.Caption}"
+                                               Margin="9,0,4,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding Version}" Style="{StaticResource Text.Caption}"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+                                <TextBlock Text="A Project Max application, free and open source under the MIT licence. Photo licences vary by source; the source page link on each photo is the authoritative word on what you may do with it."
+                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,5,0,0" />
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Style="{StaticResource Button.Ghost}"
+                                        Command="{Binding OpenWebsiteCommand}"
+                                        ToolTip="{x:Static vm:SettingsViewModel.WebsiteUrl}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.External}" />
+                                        <TextBlock Text="Website" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Style="{StaticResource Button.Ghost}" Margin="6,0,0,0"
+                                        Command="{Binding OpenSourceCodeCommand}"
+                                        ToolTip="{x:Static vm:SettingsViewModel.RepositoryUrl}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.External}" />
+                                        <TextBlock Text="Source code" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Style="{StaticResource Button.Ghost}" Margin="6,0,0,0"
+                                        Command="{Binding OpenLogCommand}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Folder}" />
+                                        <TextBlock Text="Open log file" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

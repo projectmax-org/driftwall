@@ -1,0 +1,131 @@
+<UserControl x:Class="Driftwall.UI.Controls.PhotoTile"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Driftwall.UI.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:PhotoTileViewModel}">
+
+    <Border x:Name="Root" Margin="5" CornerRadius="{StaticResource CornerRadius.Large}"
+            Background="{DynamicResource Brush.SurfaceAlt}"
+            BorderBrush="{DynamicResource Brush.Border}"
+            BorderThickness="1"
+            ClipToBounds="True"
+            RenderTransformOrigin="0.5,0.5">
+        <Border.RenderTransform>
+            <ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1" />
+        </Border.RenderTransform>
+
+        <Grid>
+            <!-- Photo -->
+            <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"
+                   RenderOptions.BitmapScalingMode="HighQuality" />
+
+            <!-- Placeholder while the thumbnail downloads -->
+            <Border Background="{DynamicResource Brush.SurfaceAlt}"
+                    Visibility="{Binding Thumbnail, Converter={StaticResource NullToVisibility}, ConverterParameter=invert}">
+                <Path Style="{StaticResource Icon.Large}"
+                      Data="{DynamicResource Icon.Browse}"
+                      Stroke="{DynamicResource Brush.TextMuted}"
+                      Opacity="0.35"
+                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+
+            <!-- Saved badge, always visible so a kept photo is obvious at a glance -->
+            <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                    Width="26" Height="26" CornerRadius="13"
+                    Background="#B2000000"
+                    Visibility="{Binding IsSaved, Converter={StaticResource BoolToVisibility}}">
+                <Path Data="{DynamicResource Icon.Heart}"
+                      Fill="{DynamicResource Brush.Accent}"
+                      Stroke="White" StrokeThickness="1.4"
+                      Stretch="Uniform" Width="13" Height="13"
+                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+
+            <!-- Hover overlay -->
+            <Grid x:Name="Overlay" Opacity="0">
+                <Border Background="{StaticResource Brush.PhotoScrim}" />
+
+                <StackPanel VerticalAlignment="Bottom" Margin="11,0,11,10">
+                    <TextBlock Text="{Binding Title}"
+                               Foreground="White" FontSize="12.5" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding Credit}"
+                               Foreground="#CCFFFFFF" FontSize="11"
+                               TextTrimming="CharacterEllipsis" Margin="0,1,0,0" />
+
+                    <StackPanel Orientation="Horizontal" Margin="0,9,0,0">
+                        <Button x:Name="SetButton" Style="{StaticResource Button.Accent}"
+                                MinHeight="29" Padding="11,0"
+                                Click="OnSetWallpaper"
+                                ToolTip="Set as wallpaper">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{DynamicResource Icon.Monitor}" Stroke="White" StrokeThickness="1.8"
+                                      Fill="Transparent" Stretch="Uniform" Width="13" Height="13"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                                <TextBlock Text="Set" Margin="6,0,0,0" FontSize="12" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+
+                        <Button x:Name="SaveButton" Width="29" Height="29" Margin="6,0,0,0"
+                                Style="{StaticResource Button.Base}"
+                                Padding="0"
+                                Background="#59000000"
+                                BorderBrush="#40FFFFFF"
+                                Click="OnToggleSave"
+                                ToolTip="Save to collection">
+                            <Path Data="{DynamicResource Icon.Heart}" Stroke="White" StrokeThickness="1.7"
+                                  Fill="Transparent" Stretch="Uniform" Width="14" Height="14"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                        </Button>
+
+                        <Button x:Name="OpenButton" Width="29" Height="29" Margin="6,0,0,0"
+                                Style="{StaticResource Button.Base}"
+                                Padding="0"
+                                Background="#59000000"
+                                BorderBrush="#40FFFFFF"
+                                Click="OnOpenSource"
+                                ToolTip="View online">
+                            <Path Data="{DynamicResource Icon.External}" Stroke="White" StrokeThickness="1.7"
+                                  Fill="Transparent" Stretch="Uniform" Width="13" Height="13"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                        </Button>
+
+                        <TextBlock Text="{Binding ResolutionLabel}"
+                                   Foreground="#99FFFFFF" FontSize="10.5"
+                                   VerticalAlignment="Center" Margin="9,0,0,0" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Grid>
+
+        <Border.Triggers>
+            <EventTrigger RoutedEvent="Border.MouseEnter">
+                <BeginStoryboard>
+                    <Storyboard>
+                        <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity"
+                                         To="1" Duration="0:0:0.14" />
+                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                         To="1.018" Duration="0:0:0.14" />
+                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                         To="1.018" Duration="0:0:0.14" />
+                    </Storyboard>
+                </BeginStoryboard>
+            </EventTrigger>
+            <EventTrigger RoutedEvent="Border.MouseLeave">
+                <BeginStoryboard>
+                    <Storyboard>
+                        <DoubleAnimation Storyboard.TargetName="Overlay" Storyboard.TargetProperty="Opacity"
+                                         To="0" Duration="0:0:0.14" />
+                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                         To="1" Duration="0:0:0.14" />
+                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                         To="1" Duration="0:0:0.14" />
+                    </Storyboard>
+                </BeginStoryboard>
+            </EventTrigger>
+        </Border.Triggers>
+    </Border>
+</UserControl>

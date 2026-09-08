@@ -1,0 +1,20 @@
+bin/
+obj/
+dist/
+artifacts/
+
+*.user
+*.suo
+.vs/
+.idea/
+
+# Generated from tools/IconGen. Kept in source control so a clean checkout builds without
+# running the generator first — regenerate with: .\build.ps1 -Icon
+!src/Driftwall/Assets/app.ico
+!src/Driftwall/Assets/logo-512.png
+
+# Inno Setup unpacked by installer/build-installer.ps1 when it is not installed system-wide.
+tools/.inno/
+
+# Local assistant/session state, never part of the project.
+.claude/

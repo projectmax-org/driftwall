@@ -1,0 +1,232 @@
+<UserControl x:Class="Driftwall.UI.Views.BrowseView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="clr-namespace:Driftwall.Core"
+             xmlns:controls="clr-namespace:Driftwall.UI.Controls"
+             xmlns:vm="clr-namespace:Driftwall.UI.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:BrowseViewModel}"
+             Background="{DynamicResource Brush.Base}">
+
+    <UserControl.Resources>
+        <DataTemplate x:Key="SourceItemTemplate">
+            <StackPanel>
+                <TextBlock Text="{Binding DisplayName}" FontWeight="Medium" />
+                <TextBlock Text="{Binding Description}" Style="{StaticResource Text.Caption}"
+                           TextTrimming="CharacterEllipsis" MaxWidth="320" />
+            </StackPanel>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ==================== Query bar ==================== -->
+        <Border Grid.Row="0" Padding="20,16,20,14"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,0,1">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="268" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <ComboBox Grid.Column="0"
+                              ItemsSource="{Binding AvailableSources}"
+                              SelectedItem="{Binding SelectedSource}"
+                              ItemTemplate="{StaticResource SourceItemTemplate}"
+                              MaxDropDownHeight="420"
+                              ToolTip="Where photos come from" />
+
+                    <!-- Mode chips -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
+                        <ToggleButton Style="{StaticResource Chip}" Content="Top"
+                                      Visibility="{Binding SupportsTop, Converter={StaticResource BoolToVisibility}}"
+                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Top}" />
+                        <ToggleButton Style="{StaticResource Chip}" Content="Categories" Margin="6,0,0,0"
+                                      Visibility="{Binding SupportsCategories, Converter={StaticResource BoolToVisibility}}"
+                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Category}" />
+                        <ToggleButton Style="{StaticResource Chip}" Content="Search" Margin="6,0,0,0"
+                                      Visibility="{Binding SupportsSearch, Converter={StaticResource BoolToVisibility}}"
+                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Search}" />
+                        <ToggleButton Style="{StaticResource Chip}" Content="Random" Margin="6,0,0,0"
+                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Random}" />
+                    </StackPanel>
+
+                    <Button Grid.Column="2" Style="{StaticResource Button.Base}"
+                            Command="{Binding AddAsWallpaperSourceCommand}"
+                            ToolTip="Use what you are looking at as one of your rotating sources">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Plus}" />
+                            <TextBlock Text="Add as source" Margin="7,0,0,0" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+
+                <!-- Second row: search box / category / time range -->
+                <Grid Margin="0,11,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.Column="0"
+                          Visibility="{Binding IsSearchMode, Converter={StaticResource BoolToVisibility}}">
+                        <TextBox Text="{Binding Keyword, UpdateSourceTrigger=PropertyChanged}"
+                                 controls:Hint.Text="Search for mountains, neon, minimal, anything..."
+                                 Padding="34,7,34,7"
+                                 KeyDown="OnSearchKeyDown" />
+                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Search}"
+                              HorizontalAlignment="Left" VerticalAlignment="Center" Margin="11,0,0,0"
+                              IsHitTestVisible="False" />
+                        <Button Style="{StaticResource Button.Icon}" Width="26" Height="26"
+                                HorizontalAlignment="Right" Margin="0,0,5,0"
+                                Command="{Binding ClearKeywordCommand}"
+                                Visibility="{Binding Keyword, Converter={StaticResource NullToVisibility}}">
+                            <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Close}" />
+                        </Button>
+                    </Grid>
+
+                    <ComboBox Grid.Column="0"
+                              Visibility="{Binding IsCategoryMode, Converter={StaticResource BoolToVisibility}}"
+                              ItemsSource="{Binding Categories}"
+                              SelectedItem="{Binding SelectedCategory}"
+                              ItemTemplate="{StaticResource Template.NameText}"
+                              MaxDropDownHeight="420" />
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0"
+                                Visibility="{Binding SupportsTimeRange, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="from the past" Style="{StaticResource Text.Caption}"
+                                   VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding TimeRanges}" SelectedItem="{Binding TimeRange}"
+                                  MinWidth="96" />
+                    </StackPanel>
+
+                    <Button Grid.Column="1" Style="{StaticResource Button.Accent}" Margin="12,0,0,0"
+                            Command="{Binding SearchCommand}"
+                            Content="Search"
+                            Visibility="{Binding IsSearchMode, Converter={StaticResource BoolToVisibility}}" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- ==================== Notices ==================== -->
+        <StackPanel Grid.Row="1">
+            <Border Background="{DynamicResource Brush.AccentSoft}"
+                    BorderBrush="{DynamicResource Brush.Accent}" BorderThickness="0,0,0,1"
+                    Padding="20,10"
+                    Visibility="{Binding NeedsApiKey, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Key}"
+                          Stroke="{DynamicResource Brush.Accent}" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding ApiKeyPrompt}" Margin="9,0,0,0" VerticalAlignment="Center"
+                               Foreground="{DynamicResource Brush.TextPrimary}" FontSize="12.5" />
+                    <TextBlock Text="Add it under Settings → API keys." Margin="6,0,0,0" VerticalAlignment="Center"
+                               Style="{StaticResource Text.Caption}" />
+                    <Button Style="{StaticResource Button.Ghost}" MinHeight="28" Padding="10,4"
+                            Margin="12,0,0,0" VerticalAlignment="Center"
+                            Content="Open Settings"
+                            Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                            CommandParameter="Settings" />
+                </StackPanel>
+            </Border>
+
+            <Border Background="#26F0B347" BorderBrush="{DynamicResource Brush.Warning}" BorderThickness="0,0,0,1"
+                    Padding="20,10"
+                    Visibility="{Binding TermsWarning, Converter={StaticResource NullToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Info}"
+                          Stroke="{DynamicResource Brush.Warning}" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding TermsWarning}" Margin="9,0,0,0" VerticalAlignment="Center"
+                               TextWrapping="Wrap" FontSize="12.5"
+                               Foreground="{DynamicResource Brush.TextPrimary}" />
+                </StackPanel>
+            </Border>
+
+            <!-- IsIndeterminate is bound, not hard-coded: a collapsed element's storyboard keeps
+                 running, and a forever-repeating animation holds the WPF render thread at 60fps for
+                 the life of the process. Binding it lets the trigger's StopStoryboard actually fire. -->
+            <ProgressBar IsIndeterminate="{Binding IsBusy}" Height="2"
+                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}" />
+        </StackPanel>
+
+        <!-- ==================== Results ==================== -->
+        <Grid Grid.Row="2">
+            <ListBox ItemsSource="{Binding Photos}"
+                     ItemContainerStyle="{StaticResource ListItem.Bare}"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Padding="15,15,15,70"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.CanContentScroll="True"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Standard"
+                     ScrollViewer.ScrollChanged="OnScrollChanged">
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <controls:VirtualizingWrapPanel ItemWidth="252" ItemHeight="166" />
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <controls:PhotoTile Width="252" Height="166"
+                                            SetWallpaperRequested="OnSetWallpaper"
+                                            SaveRequested="OnSave"
+                                            OpenSourceRequested="OnOpenSource" />
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <!-- Empty / error state -->
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420"
+                        Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                <Path Style="{StaticResource Icon.Large}" Data="{DynamicResource Icon.Browse}"
+                      Width="44" Height="44" Opacity="0.28"
+                      Stroke="{DynamicResource Brush.TextMuted}"
+                      HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding StatusMessage}"
+                           Style="{StaticResource Text.Body}"
+                           TextAlignment="Center" Margin="0,16,0,0"
+                           Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibility}}" />
+                <TextBlock Text="Pick a source above and press Search, or switch to Top for a curated set."
+                           Style="{StaticResource Text.Caption}"
+                           TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0"
+                           Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibility}, ConverterParameter=invert}" />
+            </StackPanel>
+
+            <!-- Save target + load more -->
+            <Border VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,18"
+                    Background="{DynamicResource Brush.Elevated}"
+                    BorderBrush="{DynamicResource Brush.Border}" BorderThickness="1"
+                    CornerRadius="{StaticResource CornerRadius.Pill}"
+                    Padding="6,5">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" ShadowDepth="5" Opacity="0.3" Color="Black" />
+                </Border.Effect>
+                <StackPanel Orientation="Horizontal">
+                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Heart}"
+                          VerticalAlignment="Center" Margin="9,0,0,0" />
+                    <TextBlock Text="Saving to" Style="{StaticResource Text.Caption}"
+                               VerticalAlignment="Center" Margin="7,0,7,0" />
+                    <ComboBox ItemsSource="{Binding Collections}"
+                              SelectedItem="{Binding ActiveCollection}"
+                              ItemTemplate="{StaticResource Template.NameText}"
+                              MinWidth="150" MinHeight="30" />
+                    <Button Style="{StaticResource Button.Base}" Margin="8,0,0,0" MinHeight="30"
+                            Command="{Binding LoadMoreCommand}"
+                            Content="Load more"
+                            Visibility="{Binding HasMore, Converter={StaticResource BoolToVisibility}}" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

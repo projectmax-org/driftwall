@@ -1,0 +1,30 @@
+name: Bug report
+description: Something Driftwall does wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Driftwall version
+      description: Settings → About, or the installer file name.
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display setup
+      placeholder: Windows 11 24H2, two monitors (4K at 150% + 1080p)
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Settings → About → Open log file. Paste the relevant lines; the app never writes API keys there.
+      render: text

@@ -1,0 +1,278 @@
+<UserControl x:Class="Driftwall.UI.Views.CollectionsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:Driftwall.UI.Controls"
+             xmlns:vm="clr-namespace:Driftwall.UI.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:CollectionsViewModel}"
+             Background="{DynamicResource Brush.Base}">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="260" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ==================== Left: the list of collections ==================== -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,1,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="20,20,20,12">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Collections" Style="{StaticResource Text.Heading}"
+                                   VerticalAlignment="Center" />
+                        <Border Margin="9,0,0,0" VerticalAlignment="Center"
+                                Background="{DynamicResource Brush.SurfaceAlt}"
+                                BorderBrush="{DynamicResource Brush.Border}" BorderThickness="1"
+                                CornerRadius="{StaticResource CornerRadius.Pill}"
+                                Padding="9,2">
+                            <TextBlock Text="{Binding Collections.Count}"
+                                       Style="{StaticResource Text.Caption}" />
+                        </Border>
+                    </StackPanel>
+                    <TextBlock Text="Groups of photos you kept with the heart."
+                               Style="{StaticResource Text.Caption}"
+                               TextWrapping="Wrap" Margin="0,6,0,0" />
+                </StackPanel>
+
+                <Grid Grid.Row="1">
+                    <ListBox ItemsSource="{Binding Collections}"
+                             SelectedItem="{Binding Selected}"
+                             ItemContainerStyle="{StaticResource ListItem.Row}"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Padding="10,0,10,12"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Name}"
+                                               FontWeight="Medium"
+                                               Foreground="{DynamicResource Brush.TextPrimary}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding Count, StringFormat={}{0} photos}"
+                                               Style="{StaticResource Text.Caption}"
+                                               Margin="0,3,0,0" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Nothing has ever been created -->
+                    <StackPanel VerticalAlignment="Center" Margin="20,0"
+                                Visibility="{Binding Collections.Count, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                        <Path Style="{StaticResource Icon.Large}" Data="{DynamicResource Icon.Folder}"
+                              Width="30" Height="30" Opacity="0.28"
+                              Stroke="{DynamicResource Brush.TextMuted}"
+                              HorizontalAlignment="Center" />
+                        <TextBlock Text="No collections yet"
+                                   Style="{StaticResource Text.Caption}"
+                                   TextAlignment="Center" TextWrapping="Wrap" Margin="0,12,0,0" />
+                        <TextBlock Text="Name one below to start keeping photos."
+                                   Style="{StaticResource Text.Caption}"
+                                   TextAlignment="Center" TextWrapping="Wrap" Margin="0,5,0,0"
+                                   Opacity="0.8" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Create a collection -->
+                <Border Grid.Row="2"
+                        BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,1,0,0"
+                        Padding="16,14">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding NewCollectionName, UpdateSourceTrigger=PropertyChanged}"
+                                 controls:Hint.Text="New collection name"
+                                 KeyDown="OnNewCollectionKeyDown" />
+
+                        <Button Grid.Column="1" Style="{StaticResource Button.Accent}"
+                                Margin="8,0,0,0" Width="34" Height="34" Padding="0"
+                                Command="{Binding CreateCommand}"
+                                ToolTip="Create a new, empty collection">
+                            <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Plus}"
+                                  Stroke="{DynamicResource Brush.TextOnAccent}" />
+                        </Button>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ==================== Right: the selected collection ==================== -->
+        <Grid Grid.Column="1">
+
+            <Grid Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- Header strip -->
+                <Border Grid.Row="0" Padding="20,16,20,14"
+                        Background="{DynamicResource Brush.Surface}"
+                        BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,0,1">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Title -->
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center"
+                                        Visibility="{Binding IsRenaming, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                                <TextBlock Text="{Binding Selected.Name}"
+                                           Style="{StaticResource Text.Title}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding SelectedSummary}"
+                                           Style="{StaticResource Text.Body}"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+
+                            <!-- Rename, in place of the title -->
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
+                                        Visibility="{Binding IsRenaming, Converter={StaticResource BoolToVisibility}}">
+                                <TextBox Width="240"
+                                         Text="{Binding RenameText, UpdateSourceTrigger=PropertyChanged}"
+                                         controls:Hint.Text="Collection name"
+                                         KeyDown="OnRenameKeyDown"
+                                         IsVisibleChanged="OnRenameBoxVisibleChanged" />
+                                <Button Style="{StaticResource Button.Accent}" Margin="8,0,0,0"
+                                        Padding="13,7" Content="Save"
+                                        Command="{Binding CommitRenameCommand}" />
+                                <Button Style="{StaticResource Button.Ghost}" Margin="6,0,0,0"
+                                        Padding="13,7" Content="Cancel"
+                                        Command="{Binding CancelRenameCommand}" />
+                            </StackPanel>
+
+                            <!-- Actions. Destructive first and fenced off by a rule; the primary
+                                 action sits rightmost, the same way the Browse header reads. -->
+                            <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                        VerticalAlignment="Center" Margin="16,0,0,0">
+                                <Button Style="{StaticResource Button.Danger}"
+                                        Width="34" Padding="0"
+                                        Command="{Binding DeleteCommand}"
+                                        ToolTip="Delete this collection. The photos stay online; only the group goes away.">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Trash}"
+                                          Stroke="{DynamicResource Brush.Danger}" />
+                                </Button>
+
+                                <Border Width="1" Margin="12,4" VerticalAlignment="Stretch"
+                                        Background="{DynamicResource Brush.Border}" />
+
+                                <Button Style="{StaticResource Button.Base}"
+                                        Content="Rename"
+                                        Command="{Binding BeginRenameCommand}"
+                                        ToolTip="Give this collection a different name" />
+
+                                <Button Style="{StaticResource Button.Base}" Margin="8,0,0,0"
+                                        Command="{Binding ShuffleNowCommand}"
+                                        ToolTip="Set the wallpaper right now from a random photo in here">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Refresh}"
+                                              VerticalAlignment="Center" />
+                                        <TextBlock Text="Shuffle now" Margin="7,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+
+                                <Button Style="{StaticResource Button.Accent}" Margin="8,0,0,0"
+                                        Command="{Binding UseAsSourceCommand}"
+                                        ToolTip="Mix these photos into the rotation as one of your wallpaper sources">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Monitor}"
+                                              Stroke="{DynamicResource Brush.TextOnAccent}" VerticalAlignment="Center" />
+                                        <TextBlock Text="Use as wallpaper source" Margin="7,0,0,0"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   Style="{StaticResource Text.Caption}"
+                                   Margin="0,12,0,0" TextWrapping="Wrap"
+                                   Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibility}}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Photo grid -->
+                <Grid Grid.Row="1">
+                    <ListBox ItemsSource="{Binding Photos}"
+                             ItemContainerStyle="{StaticResource ListItem.Bare}"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             Padding="15,15,15,15"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             ScrollViewer.CanContentScroll="True"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Standard">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <controls:VirtualizingWrapPanel ItemWidth="252" ItemHeight="166" />
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <controls:PhotoTile Width="252" Height="166"
+                                                    SetWallpaperRequested="OnSetWallpaper"
+                                                    SaveRequested="OnRemove"
+                                                    OpenSourceRequested="OnOpenSource" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Empty collection -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420"
+                                Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVisibility}}">
+                        <Path Style="{StaticResource Icon.Large}" Data="{DynamicResource Icon.Heart}"
+                              Width="44" Height="44" Opacity="0.28"
+                              Stroke="{DynamicResource Brush.TextMuted}"
+                              HorizontalAlignment="Center" />
+                        <TextBlock Text="Nothing saved here yet"
+                                   Style="{StaticResource Text.Body}"
+                                   HorizontalAlignment="Center" TextAlignment="Center"
+                                   Margin="0,16,0,0" />
+                        <TextBlock Text="Find photos in Browse and press the heart to keep them."
+                                   Style="{StaticResource Text.Caption}"
+                                   TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
+
+            <!-- No collection selected at all -->
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="420" Margin="20"
+                        Visibility="{Binding HasSelection, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                <Path Style="{StaticResource Icon.Large}" Data="{DynamicResource Icon.Folder}"
+                      Width="44" Height="44" Opacity="0.28"
+                      Stroke="{DynamicResource Brush.TextMuted}"
+                      HorizontalAlignment="Center" />
+                <TextBlock Text="No collection selected"
+                           Style="{StaticResource Text.Body}"
+                           HorizontalAlignment="Center" TextAlignment="Center"
+                           Margin="0,16,0,0" />
+                <TextBlock Text="Pick one on the left, or type a name at the bottom of that list to make your first."
+                           Style="{StaticResource Text.Caption}"
+                           TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" />
+                <TextBlock Text="{Binding StatusMessage}"
+                           Style="{StaticResource Text.Caption}"
+                           TextAlignment="Center" TextWrapping="Wrap" Margin="0,14,0,0"
+                           Visibility="{Binding StatusMessage, Converter={StaticResource NullToVisibility}}" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

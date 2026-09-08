@@ -1,0 +1,26 @@
+<Application x:Class="Driftwall.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="clr-namespace:Driftwall.UI"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Index 0 is the palette and is swapped at runtime by ThemeManager.
+                     Everything after it references the palette with DynamicResource. -->
+                <ResourceDictionary Source="UI/Theme/Palette.Dark.xaml" />
+                <ResourceDictionary Source="UI/Theme/Icons.xaml" />
+                <ResourceDictionary Source="UI/Theme/Controls.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <ui:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+            <ui:NullToVisibilityConverter x:Key="NullToVisibility" />
+            <ui:InverseBoolConverter x:Key="InverseBool" />
+            <ui:EnumMatchConverter x:Key="EnumMatch" />
+            <ui:StringToBrushConverter x:Key="StringToBrush" />
+            <ui:MinutesToTextConverter x:Key="MinutesToText" />
+            <ui:BytesToTextConverter x:Key="BytesToText" />
+            <ui:MultiplyConverter x:Key="Multiply" />
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

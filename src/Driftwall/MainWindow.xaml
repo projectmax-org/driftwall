@@ -1,0 +1,248 @@
+<Window x:Class="Driftwall.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:vm="clr-namespace:Driftwall.UI.ViewModels"
+        xmlns:views="clr-namespace:Driftwall.UI.Views"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
+        Title="Driftwall"
+        Width="1180" Height="760"
+        MinWidth="900" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        Background="{DynamicResource Brush.Base}"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="44"
+                            ResizeBorderThickness="6"
+                            GlassFrameThickness="0"
+                            CornerRadius="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Grid x:Name="RootGrid" Background="{DynamicResource Brush.Base}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="44" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ==================== Title bar ==================== -->
+        <Grid Grid.Row="0" Background="{DynamicResource Brush.Surface}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="14,0,0,0" VerticalAlignment="Center">
+                <!-- The same rendering that becomes app.ico, so the title bar, taskbar, tray and
+                     shortcuts all show one mark. Decoded small: it is a 20px image, not a 512px one. -->
+                <Image Width="20" Height="20" RenderOptions.BitmapScalingMode="HighQuality">
+                    <Image.Source>
+                        <BitmapImage UriSource="pack://application:,,,/Assets/logo-512.png" DecodePixelWidth="80" />
+                    </Image.Source>
+                </Image>
+                <TextBlock Text="Driftwall"
+                           FontWeight="SemiBold"
+                           FontSize="13"
+                           Margin="9,0,0,0"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource Brush.TextPrimary}" />
+                <Border Background="{DynamicResource Brush.Border}" Width="1" Height="16" Margin="14,0" />
+                <TextBlock Text="{Binding SectionTitle}"
+                           FontSize="12.5"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource Brush.TextMuted}" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="2" Orientation="Horizontal" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button Style="{StaticResource Button.Caption}" Click="OnMinimize" ToolTip="Minimise">
+                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Minimize}" />
+                </Button>
+                <Button Style="{StaticResource Button.Caption}" Click="OnMaximize" ToolTip="Maximise">
+                    <Border Width="11" Height="11" BorderThickness="1.6"
+                            BorderBrush="{DynamicResource Brush.TextSecondary}" CornerRadius="2" />
+                </Button>
+                <Button Style="{StaticResource Button.CaptionClose}" Click="OnClose" ToolTip="Close">
+                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Close}" />
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- ==================== Body ==================== -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="232" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Navigation rail -->
+            <Border Grid.Column="0" Background="{DynamicResource Brush.Surface}"
+                    BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,1,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel x:Name="NavRail" Grid.Row="0" Margin="0,12,0,0">
+                        <RadioButton Style="{StaticResource Nav.Item}" GroupName="Nav"
+                                     IsChecked="{Binding IsBrowse, Mode=TwoWay}"
+                                     Content="Browse">
+                            <RadioButton.Tag>
+                                <Path Style="{StaticResource Icon}" Data="{DynamicResource Icon.Browse}" />
+                            </RadioButton.Tag>
+                        </RadioButton>
+
+                        <RadioButton Style="{StaticResource Nav.Item}" GroupName="Nav"
+                                     IsChecked="{Binding IsCollections, Mode=TwoWay}"
+                                     Content="Collections">
+                            <RadioButton.Tag>
+                                <Path Style="{StaticResource Icon}" Data="{DynamicResource Icon.Heart}" />
+                            </RadioButton.Tag>
+                        </RadioButton>
+
+                        <RadioButton Style="{StaticResource Nav.Item}" GroupName="Nav"
+                                     IsChecked="{Binding IsDisplays, Mode=TwoWay}"
+                                     Content="Displays">
+                            <RadioButton.Tag>
+                                <Path Style="{StaticResource Icon}" Data="{DynamicResource Icon.Monitor}" />
+                            </RadioButton.Tag>
+                        </RadioButton>
+
+                        <RadioButton Style="{StaticResource Nav.Item}" GroupName="Nav"
+                                     IsChecked="{Binding IsSettings, Mode=TwoWay}"
+                                     Content="Settings">
+                            <RadioButton.Tag>
+                                <Path Style="{StaticResource Icon}" Data="{DynamicResource Icon.Settings}" />
+                            </RadioButton.Tag>
+                        </RadioButton>
+                    </StackPanel>
+
+                    <!-- Now showing -->
+                    <Border Grid.Row="2" Margin="12" Padding="0"
+                            Background="{DynamicResource Brush.Base}"
+                            BorderBrush="{DynamicResource Brush.Border}"
+                            BorderThickness="1"
+                            CornerRadius="{StaticResource CornerRadius.Large}">
+                        <StackPanel>
+                            <Border CornerRadius="13,13,0,0" ClipToBounds="True" Height="112">
+                                <Grid>
+                                    <Border Background="{DynamicResource Brush.SurfaceAlt}" />
+                                    <Image Source="{Binding CurrentPreview}" Stretch="UniformToFill" />
+                                    <Border Background="{StaticResource Brush.PhotoScrim}" />
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                Visibility="{Binding HasCurrentPhoto, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
+                                        <TextBlock Text="Nothing set yet"
+                                                   Foreground="{DynamicResource Brush.TextMuted}"
+                                                   FontSize="11.5" HorizontalAlignment="Center" />
+                                        <TextBlock Text="Press Next to get started"
+                                                   Foreground="{DynamicResource Brush.TextMuted}"
+                                                   FontSize="11" Opacity="0.8"
+                                                   HorizontalAlignment="Center" Margin="0,3,0,0" />
+                                    </StackPanel>
+                                    <StackPanel VerticalAlignment="Bottom" Margin="11,0,11,9"
+                                                Visibility="{Binding HasCurrentPhoto, Converter={StaticResource BoolToVisibility}}">
+                                        <TextBlock Text="{Binding CurrentTitle}"
+                                                   Foreground="White" FontSize="12" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding CurrentCredit}"
+                                                   Foreground="#CCFFFFFF" FontSize="11"
+                                                   TextTrimming="CharacterEllipsis" Margin="0,1,0,0" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <TextBlock Text="{Binding NextChangeLabel}"
+                                       Style="{StaticResource Text.Caption}"
+                                       Margin="12,10,12,0" />
+
+                            <StackPanel Orientation="Horizontal" Margin="8,8,8,10" HorizontalAlignment="Center">
+                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                        Command="{Binding PreviousCommand}" ToolTip="Previous wallpaper">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Previous}" />
+                                </Button>
+                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                        Command="{Binding RefreshCommand}" ToolTip="Re-render the current photo">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Refresh}" />
+                                </Button>
+                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                        Command="{Binding TogglePauseCommand}"
+                                        ToolTip="{Binding PauseLabel}">
+                                    <Path>
+                                        <Path.Style>
+                                            <Style TargetType="Path" BasedOn="{StaticResource Icon.Small}">
+                                                <Setter Property="Data" Value="{DynamicResource Icon.Pause}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                                                        <Setter Property="Data" Value="{DynamicResource Icon.Play}" />
+                                                        <Setter Property="Stroke" Value="{DynamicResource Brush.Accent}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Path.Style>
+                                    </Path>
+                                </Button>
+                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                        Command="{Binding SaveCurrentCommand}" ToolTip="Save to a collection">
+                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Heart}" />
+                                </Button>
+                                <Button Style="{StaticResource Button.Accent}" Margin="6,0,0,0"
+                                        Padding="14,0" MinHeight="32"
+                                        Command="{Binding NextCommand}" ToolTip="Next wallpaper">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Next}"
+                                              Stroke="White" />
+                                        <TextBlock Text="Next" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- Content -->
+            <Grid Grid.Column="1">
+                <views:BrowseView DataContext="{Binding Browse}"
+                                  Visibility="{Binding DataContext.IsBrowse, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}" />
+                <views:CollectionsView DataContext="{Binding Collections}"
+                                       Visibility="{Binding DataContext.IsCollections, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}" />
+                <views:DisplaysView DataContext="{Binding Displays}"
+                                    Visibility="{Binding DataContext.IsDisplays, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}" />
+                <views:SettingsView DataContext="{Binding Settings}"
+                                    Visibility="{Binding DataContext.IsSettings, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVisibility}}" />
+            </Grid>
+        </Grid>
+
+        <!-- ==================== Status bar ==================== -->
+        <Border Grid.Row="2" Background="{DynamicResource Brush.Surface}"
+                BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,1,0,0"
+                Padding="14,7">
+            <Grid>
+                <TextBlock Text="{Binding StatusMessage}"
+                           FontSize="11.5"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource Brush.TextMuted}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding StatusIsError}" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource Brush.Danger}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
