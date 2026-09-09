@@ -129,6 +129,7 @@ public partial class MainWindow : Window
     /// <summary>Hides the window and leaves the app running in the notification area.</summary>
     private void HideToTray()
     {
+        Log.Info("Window closed to the notification area.");
         Hide();
         ShowTrayHintOnce();
     }
