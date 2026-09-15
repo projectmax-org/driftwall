@@ -84,6 +84,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 CloseApplications=yes
+; Each install writes a fresh uninstall log. Appending would keep records from older versions, such
+; as 1.0.1's "taskkill every Driftwall.exe" and its unconditional removal of the Run value.
+UninstallLogMode=overwrite
 RestartApplications=no
 ShowLanguageDialog=auto
 
@@ -165,9 +168,6 @@ Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
-[Registry]
-; Same key and value the app's own "Start with Windows" switch manages, so the two stay in step.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --minimized"; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchTask,{#AppName}}"; Flags: nowait postinstall skipifsilent
@@ -176,10 +176,73 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchTask,{#AppName}}"; Flags: n
 Filename: "{app}\{#AppExe}"; Parameters: "--minimized"; Flags: nowait runasoriginaluser; Check: RelaunchHidden
 Filename: "{app}\{#AppExe}"; Parameters: "--show"; Flags: nowait runasoriginaluser; Check: RelaunchVisible
 
-[UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#AppExe} /F"; Flags: runhidden; RunOnceId: "StopDriftwall"
 
 [Code]
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F2E9D0C-3B7A-4E15-9C4D-2A8F1B5D7E30}_is1';
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+var
+  IsUpgrade: Boolean;
+
+// Noted before anything is written, so an upgrade can leave the user's own choices alone.
+function InitializeSetup: Boolean;
+begin
+  // Only the scope being installed counts: a per-user install is new even beside an all-users one.
+  if IsAdminInstallMode then
+    IsUpgrade := RegKeyExists(HKLM, UninstallKey)
+  else
+    IsUpgrade := RegKeyExists(HKCU, UninstallKey);
+  Result := True;
+end;
+
+// Ends the Driftwall processes started from this installation, and only those: a portable copy
+// elsewhere keeps running. A tray app has no window for the Restart Manager to close.
+procedure StopRunningCopies;
+var
+  Locator, Service, Found, Item: Variant;
+  Target, ItemPath: String;
+  I, Code: Integer;
+begin
+  Target := Lowercase(ExpandConstant('{app}\{#AppExe}'));
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    // Elevated, this lets WMI read and end another signed-in user's copy of the same installation.
+    if IsAdminInstallMode then
+      Service.Security_.Privileges.AddAsString('SeDebugPrivilege', True);
+    Found := Service.ExecQuery('SELECT ProcessId, ExecutablePath FROM Win32_Process WHERE Name = ''{#AppExe}''');
+    for I := 0 to Found.Count - 1 do
+    begin
+      Item := Found.ItemIndex(I);
+      if not VarIsNull(Item.ExecutablePath) then
+      begin
+        ItemPath := Item.ExecutablePath;
+        if Lowercase(ItemPath) = Target then
+        begin
+          Code := Item.Terminate(0);
+          if Code <> 0 then
+            Log(Format('Could not stop Driftwall process %s (WMI result %d).', [ItemPath, Code]));
+        end;
+      end;
+    end;
+    Sleep(500);
+  except
+    Log('Could not stop running copies: ' + GetExceptionMessage);
+  end;
+end;
+
+// The Run value is the one the app's own "Start with Windows" switch manages. It is written on a
+// first install only: an upgrade must not undo a choice made since, or take the entry from a
+// portable copy.
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  // In an all-users install HKCU is the hive of whoever approved setup, maybe another account, so the
+  // app creates the entry for each user on first run instead, from the task Inno Setup records.
+  if (CurStep = ssPostInstall) and (not IsUpgrade) and (not IsAdminInstallMode) and WizardIsTaskSelected('startup') then
+    RegWriteStringValue(HKCU, RunKey, '{#AppName}', '"' + ExpandConstant('{app}\{#AppExe}') + '" --minimized');
+end;
+
 function RelaunchHidden: Boolean;
 begin
   Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
@@ -190,13 +253,10 @@ begin
   Result := ExpandConstant('{param:RELAUNCH|0}') = '2';
 end;
 
-// A tray app has no window for the Restart Manager to close, so stop it explicitly before the
-// files are replaced. taskkill returns non-zero when nothing is running; that is fine.
+// The running copy is stopped before its files are replaced.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  ResultCode: Integer;
 begin
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM {#AppExe} /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  StopRunningCopies;
   Result := '';
 end;
 
@@ -206,8 +266,17 @@ end;
 // that switch the question is still asked, even under /VERYSILENT.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  DataDir: String;
+  DataDir, Command: String;
 begin
+  if CurUninstallStep = usUninstall then
+  begin
+    StopRunningCopies;
+    // Only this installation's start-with-Windows entry goes; one that starts a portable copy stays.
+    if RegQueryStringValue(HKCU, RunKey, '{#AppName}', Command) and
+       (Pos(Lowercase(ExpandConstant('{app}\{#AppExe}')), Lowercase(Command)) > 0) then
+      RegDeleteValue(HKCU, RunKey, '{#AppName}');
+  end;
+
   if CurUninstallStep = usPostUninstall then
   begin
     DataDir := ExpandConstant('{localappdata}\{#AppName}');

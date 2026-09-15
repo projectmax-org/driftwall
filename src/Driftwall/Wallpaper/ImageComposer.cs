@@ -12,34 +12,67 @@ namespace Driftwall.Wallpaper;
 /// rescales it, which is why the result stays sharp — the desktop's own "Fill" is a low-quality
 /// bilinear stretch. All work happens on <see cref="RenderThread"/>.
 /// </para>
+/// <para>
+/// The photo is resampled once, with <see cref="Resampler"/>, straight to the pixels it will occupy,
+/// and the result is saved as PNG. Windows re-encodes a JPEG wallpaper at quality 85 before showing
+/// it (the JPEGImportQuality default) but displays a PNG's pixels untouched, so PNG is the only
+/// format that reaches the screen exactly as rendered.
+/// </para>
 /// </summary>
 public static class ImageComposer
 {
+    /// <summary>File extension of rendered wallpapers.</summary>
+    public const string OutputExtension = ".png";
+
     /// <summary>Width the blur backdrop is downsampled to before being stretched back up.</summary>
     private const int BlurSeedWidth = 48;
 
     /// <summary>How much the blurred backdrop is darkened so the photo stays the focus.</summary>
     private const double BlurDarkenOpacity = 0.38;
 
+    /// <summary>Metadata query for the EXIF orientation tag.</summary>
+    private const string OrientationQuery = "/app1/ifd/{ushort=274}";
+
     /// <summary>Reads pixel dimensions from the file header without decoding pixel data.</summary>
     public static (int Width, int Height) ReadDimensions(string path)
     {
-        try
+        var (width, height, _) = ReadHeader(path);
+        return (width, height);
+    }
+
+    /// <summary>
+    /// Dimensions as the photo will appear on screen: width and height swap for camera photos whose
+    /// EXIF orientation turns them sideways. Runs on <see cref="RenderThread"/>.
+    /// </summary>
+    public static Task<(int Width, int Height)> ReadDisplayDimensionsAsync(string path, CancellationToken ct = default) =>
+        RenderThread.InvokeAsync(() =>
         {
-            using var stream = File.OpenRead(path);
-            var frame = BitmapFrame.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-            return (frame.PixelWidth, frame.PixelHeight);
-        }
-        catch (Exception ex)
+            var (width, height, orientation) = ReadHeader(path);
+            return IsSideways(orientation) ? (height, width) : (width, height);
+        }, ct);
+
+    /// <summary>
+    /// How many times a photo is enlarged to reach a canvas in the given mode. Above 1 the photo is
+    /// stretched past its real pixels. Center and Tile never scale, so they report 1.
+    /// </summary>
+    public static double EnlargementFactor(int photoWidth, int photoHeight, int canvasWidth, int canvasHeight, ScalingMode mode)
+    {
+        if (photoWidth <= 0 || photoHeight <= 0 || canvasWidth <= 0 || canvasHeight <= 0) return 1.0;
+
+        double x = (double)canvasWidth / photoWidth;
+        double y = (double)canvasHeight / photoHeight;
+
+        return mode switch
         {
-            Log.Warn("Could not read image dimensions: " + path, ex);
-            return (0, 0);
-        }
+            ScalingMode.Fit => Math.Min(x, y),
+            ScalingMode.Center or ScalingMode.Tile => 1.0,
+            _ => Math.Max(x, y), // Fill and Stretch have to reach both edges.
+        };
     }
 
     /// <summary>
     /// Composes <paramref name="sourcePath"/> onto a <paramref name="targetWidth"/> x
-    /// <paramref name="targetHeight"/> canvas and writes it to <paramref name="outputPath"/>.
+    /// <paramref name="targetHeight"/> canvas and writes it to <paramref name="outputPath"/> as PNG.
     /// Returns false when the source could not be decoded.
     /// </summary>
     public static Task<bool> ComposeAsync(
@@ -50,10 +83,9 @@ public static class ImageComposer
         ScalingMode mode,
         LetterboxStyle letterbox,
         Color letterboxColor,
-        int jpegQuality,
         CancellationToken ct = default)
         => RenderThread.InvokeAsync(
-            () => Compose(sourcePath, outputPath, targetWidth, targetHeight, mode, letterbox, letterboxColor, jpegQuality, ct),
+            () => Compose(sourcePath, outputPath, targetWidth, targetHeight, mode, letterbox, letterboxColor, ct),
             ct);
 
     /// <summary>
@@ -67,15 +99,14 @@ public static class ImageComposer
         ScalingMode mode,
         LetterboxStyle letterbox,
         Color letterboxColor,
-        int jpegQuality,
         CancellationToken ct = default)
         => RenderThread.InvokeAsync(
-            () => ComposeSpan(sourcePath, monitors, outputPathFor, mode, letterbox, letterboxColor, jpegQuality, ct),
+            () => ComposeSpan(sourcePath, monitors, outputPathFor, mode, letterbox, letterboxColor, ct),
             ct);
 
     private static bool Compose(
         string sourcePath, string outputPath, int targetWidth, int targetHeight,
-        ScalingMode mode, LetterboxStyle letterbox, Color letterboxColor, int jpegQuality,
+        ScalingMode mode, LetterboxStyle letterbox, Color letterboxColor,
         CancellationToken ct)
     {
         if (targetWidth <= 0 || targetHeight <= 0) return false;
@@ -87,21 +118,10 @@ public static class ImageComposer
             var source = Decode(sourcePath, targetWidth, targetHeight, mode);
             if (source is null) return false;
 
-            var visual = new DrawingVisual();
-            RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
-            RenderOptions.SetEdgeMode(visual, EdgeMode.Unspecified);
-
-            var canvas = new Rect(0, 0, targetWidth, targetHeight);
-
-            using (var dc = visual.RenderOpen())
-            {
-                DrawBackdrop(dc, source, canvas, mode, letterbox, letterboxColor);
-                DrawPhoto(dc, source, canvas, mode);
-            }
+            var rendered = Render(source, targetWidth, targetHeight, mode, letterbox, letterboxColor, ct);
 
             ct.ThrowIfCancellationRequested();
-            var rendered = Rasterize(visual, targetWidth, targetHeight);
-            Encode(rendered, outputPath, jpegQuality);
+            Encode(rendered, outputPath);
             return true;
         }
         catch (OperationCanceledException)
@@ -115,15 +135,15 @@ public static class ImageComposer
         }
         finally
         {
-            // A 4K Pbgra32 render target is ~33 MB. Hand it back promptly instead of waiting for
-            // a gen-2 collection that may not happen for minutes on an otherwise idle app.
+            // A 4K canvas is ~33 MB of pixels. Hand it back promptly instead of waiting for a gen-2
+            // collection that may not happen for minutes on an otherwise idle app.
             MemoryTrimmer.RequestCollect();
         }
     }
 
     private static bool ComposeSpan(
         string sourcePath, IReadOnlyList<MonitorInfo> monitors, Func<MonitorInfo, string> outputPathFor,
-        ScalingMode mode, LetterboxStyle letterbox, Color letterboxColor, int jpegQuality,
+        ScalingMode mode, LetterboxStyle letterbox, Color letterboxColor,
         CancellationToken ct)
     {
         if (monitors.Count == 0) return false;
@@ -143,38 +163,27 @@ public static class ImageComposer
             var source = Decode(sourcePath, spanWidth, spanHeight, mode);
             if (source is null) return false;
 
-            var visual = new DrawingVisual();
-            RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
-
-            var canvas = new Rect(0, 0, spanWidth, spanHeight);
-            using (var dc = visual.RenderOpen())
-            {
-                DrawBackdrop(dc, source, canvas, mode, letterbox, letterboxColor);
-                DrawPhoto(dc, source, canvas, mode);
-            }
-
-            var spanned = Rasterize(visual, spanWidth, spanHeight);
+            var spanned = Render(source, spanWidth, spanHeight, mode, letterbox, letterboxColor, ct);
 
             foreach (var monitor in monitors)
             {
                 ct.ThrowIfCancellationRequested();
 
                 // Monitor rects are in virtual-desktop coordinates; shift them into canvas space.
-                var slice = new System.Windows.Int32Rect(
-                    monitor.X - left, monitor.Y - top, monitor.Width, monitor.Height);
+                var slice = new Int32Rect(monitor.X - left, monitor.Y - top, monitor.Width, monitor.Height);
 
                 if (slice.X < 0 || slice.Y < 0 ||
                     slice.X + slice.Width > spanned.PixelWidth ||
                     slice.Y + slice.Height > spanned.PixelHeight)
                 {
                     Log.Warn("Span slice out of bounds for " + monitor.Name + "; falling back to full canvas.");
-                    Encode(spanned, outputPathFor(monitor), jpegQuality);
+                    Encode(spanned, outputPathFor(monitor));
                     continue;
                 }
 
                 var cropped = new CroppedBitmap(spanned, slice);
                 cropped.Freeze();
-                Encode(cropped, outputPathFor(monitor), jpegQuality);
+                Encode(cropped, outputPathFor(monitor));
             }
 
             return true;
@@ -204,17 +213,25 @@ public static class ImageComposer
     {
         if (!File.Exists(path)) return null;
 
-        var (naturalWidth, naturalHeight) = ReadDimensions(path);
+        var (naturalWidth, naturalHeight, orientation) = ReadHeader(path);
+
+        // A sideways camera photo is measured the way it will be shown.
+        int shownWidth = IsSideways(orientation) ? naturalHeight : naturalWidth;
+        int shownHeight = IsSideways(orientation) ? naturalWidth : naturalHeight;
 
         int decodeWidth = 0;
-        if (naturalWidth > 0 && naturalHeight > 0 && mode is not (ScalingMode.Center or ScalingMode.Tile))
+        if (shownWidth > 0 && shownHeight > 0 && mode is not (ScalingMode.Center or ScalingMode.Tile))
         {
             double scale = mode == ScalingMode.Fit
-                ? Math.Min((double)targetWidth / naturalWidth, (double)targetHeight / naturalHeight)
-                : Math.Max((double)targetWidth / naturalWidth, (double)targetHeight / naturalHeight);
+                ? Math.Min((double)targetWidth / shownWidth, (double)targetHeight / shownHeight)
+                : Math.Max((double)targetWidth / shownWidth, (double)targetHeight / shownHeight);
 
-            // Only ever downscale at decode time; upscaling here would waste memory for no quality gain.
-            if (scale < 1.0) decodeWidth = Math.Max(1, (int)Math.Ceiling(naturalWidth * scale));
+            // Decoding only ever shrinks, and never below the size needed: the resampler takes the
+            // final, exact step. DecodePixelWidth applies before rotation, hence the natural width.
+            // The tolerance absorbs floating-point noise: 4188 * (3840 / 4188.0) is 3840.0000000000005,
+            // and a ceiling of 3841 would turn an exact copy into a soft 3841-to-3840 resample. A real
+            // fractional part here is at least 1/65535, far above it.
+            if (scale < 1.0) decodeWidth = Math.Max(1, (int)Math.Ceiling(naturalWidth * scale - 1e-7));
         }
 
         try
@@ -228,7 +245,7 @@ public static class ImageComposer
             image.EndInit();
             image.Freeze();
 
-            return ApplyExifOrientation(image, path);
+            return ApplyExifOrientation(image, orientation);
         }
         catch (Exception ex)
         {
@@ -237,42 +254,99 @@ public static class ImageComposer
         }
     }
 
-    /// <summary>
-    /// WPF's decoders do not rotate by the EXIF orientation tag, so photos straight off a phone in a
-    /// local folder would otherwise appear sideways.
-    /// </summary>
-    private static BitmapSource ApplyExifOrientation(BitmapSource image, string path)
+    /// <summary>Pixel size and EXIF orientation (1 when absent), read without decoding pixels.</summary>
+    private static (int Width, int Height, ushort Orientation) ReadHeader(string path)
     {
         try
         {
             using var stream = File.OpenRead(path);
             var frame = BitmapFrame.Create(stream, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
-            if (frame.Metadata is not BitmapMetadata metadata) return image;
-            if (!metadata.ContainsQuery("/app1/ifd/{ushort=274}")) return image;
-            if (metadata.GetQuery("/app1/ifd/{ushort=274}") is not ushort orientation) return image;
-
-            var transform = orientation switch
-            {
-                3 => new RotateTransform(180),
-                6 => new RotateTransform(90),
-                8 => new RotateTransform(270),
-                _ => null,
-            };
-            if (transform is null) return image;
-
-            transform.Freeze();
-            var rotated = new TransformedBitmap(image, transform);
-            rotated.Freeze();
-            return rotated;
+            return (frame.PixelWidth, frame.PixelHeight, OrientationOf(frame));
         }
-        catch
+        catch (Exception ex)
         {
-            // Missing or malformed EXIF is normal; the un-rotated image is the right answer.
-            return image;
+            Log.Warn("Could not read image dimensions: " + path, ex);
+            return (0, 0, 1);
         }
     }
 
+    private static ushort OrientationOf(BitmapFrame frame)
+    {
+        try
+        {
+            if (frame.Metadata is BitmapMetadata metadata &&
+                metadata.ContainsQuery(OrientationQuery) &&
+                metadata.GetQuery(OrientationQuery) is ushort orientation)
+                return orientation;
+        }
+        catch
+        {
+            // Missing or malformed EXIF is normal, and PNG metadata does not support the query at all.
+        }
+
+        return 1;
+    }
+
+    /// <summary>Orientations 6 and 8 are the quarter turns <see cref="ApplyExifOrientation"/> applies.</summary>
+    private static bool IsSideways(ushort orientation) => orientation is 6 or 8;
+
+    /// <summary>
+    /// WPF's decoders do not rotate by the EXIF orientation tag, so photos straight off a phone in a
+    /// local folder would otherwise appear sideways.
+    /// </summary>
+    private static BitmapSource ApplyExifOrientation(BitmapSource image, ushort orientation)
+    {
+        var transform = orientation switch
+        {
+            3 => new RotateTransform(180),
+            6 => new RotateTransform(90),
+            8 => new RotateTransform(270),
+            _ => null,
+        };
+        if (transform is null) return image;
+
+        transform.Freeze();
+        var rotated = new TransformedBitmap(image, transform);
+        rotated.Freeze();
+        return rotated;
+    }
+
     // ---------------- drawing ----------------
+
+    /// <summary>
+    /// Produces the finished canvas. Fill and Stretch cover every pixel, so the resampled photo is the
+    /// canvas and no render target is needed. The other modes draw it over a backdrop.
+    /// </summary>
+    private static BitmapSource Render(
+        BitmapSource source, int canvasWidth, int canvasHeight,
+        ScalingMode mode, LetterboxStyle letterbox, Color letterboxColor, CancellationToken ct)
+    {
+        // A photo with an alpha channel still goes over the black backdrop, so transparent areas come
+        // out black rather than as whatever colour happens to be stored under them.
+        if (mode is ScalingMode.Fill or ScalingMode.Stretch && IsOpaque(source.Format))
+            return PlacePhoto(source, canvasWidth, canvasHeight, mode).Image;
+
+        var canvas = new Rect(0, 0, canvasWidth, canvasHeight);
+        var visual = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
+        RenderOptions.SetEdgeMode(visual, EdgeMode.Unspecified);
+
+        using (var dc = visual.RenderOpen())
+        {
+            DrawBackdrop(dc, source, canvas, mode, letterbox, letterboxColor);
+            DrawPhoto(dc, source, canvas, mode);
+        }
+
+        ct.ThrowIfCancellationRequested();
+        return Rasterize(visual, canvasWidth, canvasHeight);
+    }
+
+    /// <summary>Pixel formats with no alpha channel. Anything else may be transparent somewhere.</summary>
+    private static bool IsOpaque(PixelFormat format) =>
+        format == PixelFormats.Bgr24 || format == PixelFormats.Bgr32 || format == PixelFormats.Rgb24 ||
+        format == PixelFormats.Rgb48 || format == PixelFormats.Cmyk32 || format == PixelFormats.Gray8 ||
+        format == PixelFormats.Gray16 || format == PixelFormats.Gray4 || format == PixelFormats.Gray2 ||
+        format == PixelFormats.BlackWhite;
 
     private static void DrawBackdrop(
         DrawingContext dc, BitmapSource source, Rect canvas,
@@ -333,48 +407,92 @@ public static class ImageComposer
 
     private static void DrawPhoto(DrawingContext dc, BitmapSource source, Rect canvas, ScalingMode mode)
     {
+        if (mode == ScalingMode.Tile)
+        {
+            var brush = new ImageBrush(source)
+            {
+                TileMode = TileMode.Tile,
+                Viewport = new Rect(0, 0, source.PixelWidth, source.PixelHeight),
+                ViewportUnits = BrushMappingMode.Absolute,
+                // Fill maps the whole photo onto its viewport, which is already its pixel size. None
+                // would draw it at its DPI size instead, cropping a 72-dpi photo or shrinking a 144-dpi one.
+                Stretch = Stretch.Fill,
+            };
+            brush.Freeze();
+            dc.DrawRectangle(brush, null, canvas);
+            return;
+        }
+
+        var placement = PlacePhoto(source, (int)canvas.Width, (int)canvas.Height, mode);
+
+        // The photo already has exactly the pixels it will occupy, at whole-pixel positions. Nearest
+        // neighbour makes WPF copy them rather than filter them a second time.
+        var photo = new DrawingGroup { ClipGeometry = new RectangleGeometry(canvas) };
+        RenderOptions.SetBitmapScalingMode(photo, BitmapScalingMode.NearestNeighbor);
+        using (var context = photo.Open())
+        {
+            context.DrawImage(placement.Image, placement.Target);
+        }
+        photo.Freeze();
+        dc.DrawDrawing(photo);
+    }
+
+    /// <summary>A photo resampled to the pixels it will occupy, and where those pixels go on the canvas.</summary>
+    private readonly record struct Placement(BitmapSource Image, Rect Target);
+
+    private static Placement PlacePhoto(BitmapSource source, int canvasWidth, int canvasHeight, ScalingMode mode)
+    {
+        int width = source.PixelWidth;
+        int height = source.PixelHeight;
+        var whole = new Rect(0, 0, width, height);
+
         switch (mode)
         {
             case ScalingMode.Stretch:
-                dc.DrawImage(source, canvas);
-                break;
-
-            case ScalingMode.Tile:
-            {
-                var brush = new ImageBrush(source)
-                {
-                    TileMode = TileMode.Tile,
-                    Viewport = new Rect(0, 0, source.PixelWidth, source.PixelHeight),
-                    ViewportUnits = BrushMappingMode.Absolute,
-                    Stretch = Stretch.None,
-                };
-                brush.Freeze();
-                dc.DrawRectangle(brush, null, canvas);
-                break;
-            }
+                return new Placement(
+                    Resampler.Resize(source, whole, canvasWidth, canvasHeight),
+                    new Rect(0, 0, canvasWidth, canvasHeight));
 
             case ScalingMode.Center:
-            {
-                var rect = new Rect(
-                    canvas.X + (canvas.Width - source.PixelWidth) / 2.0,
-                    canvas.Y + (canvas.Height - source.PixelHeight) / 2.0,
-                    source.PixelWidth,
-                    source.PixelHeight);
-                dc.PushClip(new RectangleGeometry(canvas));
-                dc.DrawImage(source, rect);
-                dc.Pop();
-                break;
-            }
+            case ScalingMode.Tile:
+                // Whole-pixel offsets: half a pixel would make WPF blur every pixel of the photo.
+                return new Placement(source, new Rect(
+                    Math.Floor((canvasWidth - width) / 2.0),
+                    Math.Floor((canvasHeight - height) / 2.0),
+                    width, height));
 
             case ScalingMode.Fit:
-                dc.DrawImage(source, FitRect(source.PixelWidth, source.PixelHeight, canvas, cover: false));
-                break;
+            {
+                double scale = Math.Min((double)canvasWidth / width, (double)canvasHeight / height);
+                int fitWidth = Math.Clamp((int)Math.Round(width * scale), 1, canvasWidth);
+                int fitHeight = Math.Clamp((int)Math.Round(height * scale), 1, canvasHeight);
+                return new Placement(
+                    Resampler.Resize(source, whole, fitWidth, fitHeight),
+                    new Rect((canvasWidth - fitWidth) / 2, (canvasHeight - fitHeight) / 2, fitWidth, fitHeight));
+            }
 
-            default: // Fill
-                dc.PushClip(new RectangleGeometry(canvas));
-                dc.DrawImage(source, FitRect(source.PixelWidth, source.PixelHeight, canvas, cover: true));
-                dc.Pop();
-                break;
+            default:
+            {
+                // Fill: only the part of the photo that stays on screen is resampled, straight to the
+                // canvas size, so no pixels are spent on the cropped-off edges.
+                double scale = Math.Max((double)canvasWidth / width, (double)canvasHeight / height);
+                double regionWidth = canvasWidth / scale;
+                double regionHeight = canvasHeight / scale;
+                double regionX = (width - regionWidth) / 2;
+                double regionY = (height - regionHeight) / 2;
+                if (scale == 1.0)
+                {
+                    // Unscaled, the crop must start on a whole pixel. An odd number of spare rows would
+                    // put it half a pixel in, and the filter would then blur every row it copies.
+                    regionX = Math.Floor(regionX);
+                    regionY = Math.Floor(regionY);
+                }
+
+                var region = new Rect(regionX, regionY, regionWidth, regionHeight);
+                return new Placement(
+                    Resampler.Resize(source, region, canvasWidth, canvasHeight),
+                    new Rect(0, 0, canvasWidth, canvasHeight));
+            }
         }
     }
 
@@ -407,24 +525,35 @@ public static class ImageComposer
         return target;
     }
 
-    private static void Encode(BitmapSource image, string outputPath, int quality)
+    private static void Encode(BitmapSource image, string outputPath)
     {
         var directory = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(directory)) Paths.EnsureDirectory(directory);
 
-        var encoder = new JpegBitmapEncoder { QualityLevel = Math.Clamp(quality, 60, 100) };
-        encoder.Frames.Add(BitmapFrame.Create(image));
+        // A wallpaper is opaque, and dropping the alpha channel makes the file a quarter smaller.
+        var opaque = new FormatConvertedBitmap(image, PixelFormats.Bgr24, null, 0);
+        var encoder = new PngBitmapEncoder { Interlace = PngInterlaceOption.Off };
+        encoder.Frames.Add(BitmapFrame.Create(opaque));
 
         // Write to a temporary file first: Windows sometimes has the previous wallpaper file open,
         // and a half-written file would show as a corrupt desktop.
         var temp = outputPath + ".tmp";
-        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024))
+        try
         {
-            encoder.Save(stream);
-        }
+            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024))
+            {
+                encoder.Save(stream);
+            }
 
-        if (File.Exists(outputPath)) File.Delete(outputPath);
-        File.Move(temp, outputPath);
+            if (File.Exists(outputPath)) File.Delete(outputPath);
+            File.Move(temp, outputPath);
+        }
+        catch
+        {
+            // Nothing ever uses a half-written file again, and a 4K PNG is tens of megabytes.
+            try { File.Delete(temp); } catch { /* the render folder sweep gets it */ }
+            throw;
+        }
     }
 
     /// <summary>Average colour, computed by letting WIC downsample the image to a single pixel.</summary>

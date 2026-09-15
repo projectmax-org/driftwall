@@ -99,7 +99,6 @@ public sealed class SettingsStore : IDisposable
     {
         settings.IntervalMinutes = Math.Max(0, settings.IntervalMinutes);
         settings.PrefetchCount = Math.Clamp(settings.PrefetchCount, 0, 10);
-        settings.OutputQuality = Math.Clamp(settings.OutputQuality, 60, 100);
         settings.CacheSizeMegabytes = Math.Clamp(settings.CacheSizeMegabytes, 64, 65536);
         settings.MinResolutionRatio = Math.Clamp(settings.MinResolutionRatio, 0.1, 2.0);
         settings.NoRepeatWindow = Math.Clamp(settings.NoRepeatWindow, 0, 5000);

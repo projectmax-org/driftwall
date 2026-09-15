@@ -133,13 +133,13 @@ public sealed class AppSettings
     public MultiMonitorMode MultiMonitor { get; set; } = MultiMonitorMode.DifferentPerMonitor;
     public List<MonitorSettings> Monitors { get; set; } = new();
 
-    /// <summary>JPEG quality for the rendered wallpaper file (75–100).</summary>
-    public int OutputQuality { get; set; } = 92;
-
-    /// <summary>Skip photos whose native resolution is far below the target monitor.</summary>
+    /// <summary>Skip photos that would have to be enlarged well past their real size to cover a display.</summary>
     public bool RejectLowResolution { get; set; } = true;
 
-    /// <summary>Fraction of the monitor's width a photo must reach to be accepted (0.5 = half).</summary>
+    /// <summary>
+    /// Fraction of each display's width and height a photo must reach; 0.65 allows at most about 1.5x
+    /// enlargement. Checked against what a source reports before download and the real file after it.
+    /// </summary>
     public double MinResolutionRatio { get; set; } = 0.65;
 
     // ---------- Behaviour / performance ----------

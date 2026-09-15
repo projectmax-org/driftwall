@@ -227,13 +227,12 @@ public sealed class UnsplashSource : PhotoSourceBase
 
     private List<PhotoItem> Map(JsonElement array, SourceQuery query, SourceContext context, string key)
     {
-        var fullWidth = Math.Clamp(context.TargetWidth, 1920, 7680);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var items = new List<PhotoItem>(array.GetArrayLength());
 
         foreach (var element in array.EnumerateArray())
         {
-            var item = ReadPhoto(element, key, fullWidth);
+            var item = ReadPhoto(element, key, context.TargetWidth, context.TargetHeight);
             if (item is null || !seen.Add(item.Id) || !Accepts(item, query)) continue;
             items.Add(item);
         }
@@ -241,7 +240,21 @@ public sealed class UnsplashSource : PhotoSourceBase
         return items;
     }
 
-    private PhotoItem? ReadPhoto(JsonElement photo, string key, int fullWidth)
+    /// <summary>
+    /// The width to ask imgix for: enough for this photo to cover the largest display in Fill,
+    /// whatever its shape. A panorama sized only by the display's width comes back too short and
+    /// would have to be enlarged to reach the display's height.
+    /// </summary>
+    private static int FullWidthFor(int photoWidth, int photoHeight, int targetWidth, int targetHeight)
+    {
+        double needed = targetWidth;
+        if (photoWidth > 0 && photoHeight > 0)
+            needed = Math.Max(targetWidth, Math.Ceiling(targetHeight * (double)photoWidth / photoHeight));
+
+        return (int)Math.Clamp(needed, 1920, 7680);
+    }
+
+    private PhotoItem? ReadPhoto(JsonElement photo, string key, int targetWidth, int targetHeight)
     {
         var id = ReadString(photo, "id");
         if (string.IsNullOrEmpty(id)) return null;
@@ -250,6 +263,7 @@ public sealed class UnsplashSource : PhotoSourceBase
         var links = ReadObject(photo, "links");
         var user = ReadObject(photo, "user");
         var raw = ReadString(urls, "raw");
+        var fullWidth = FullWidthFor(ReadInt(photo, "width"), ReadInt(photo, "height"), targetWidth, targetHeight);
 
         return new PhotoItem
         {

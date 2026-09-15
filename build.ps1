@@ -27,7 +27,9 @@ param(
     [ValidateSet('win-x64', 'win-arm64')]
     [string]$Runtime = 'win-x64',
 
-    [string]$Output = "$PSScriptRoot\dist",
+    # Defaults to dist next to this script (resolved below: $PSScriptRoot can be empty inside
+    # param defaults in Windows PowerShell 5.1, seen when the script is started with powershell -File).
+    [string]$Output,
 
     # Smaller output, but the target machine must already have the .NET Desktop Runtime.
     [switch]$FrameworkDependent,
@@ -56,6 +58,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $Output) { $Output = Join-Path $PSScriptRoot 'dist' }
 $project = "$PSScriptRoot\src\Driftwall\Driftwall.csproj"
 
 function Resolve-Dotnet {

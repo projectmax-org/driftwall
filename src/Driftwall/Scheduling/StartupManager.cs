@@ -77,8 +77,10 @@ public static class StartupManager
     }
 
     /// <summary>
-    /// Re-points an existing entry at the current executable. Worth doing on every launch because
-    /// the path changes when the user moves the app or it updates through a store.
+    /// Re-points an existing entry at the current executable when the program it names is gone,
+    /// which is what happens when the user moves the app. An entry that still names a working copy
+    /// is left alone: with an installed and a portable copy side by side, the one launched last must
+    /// not take start-with-Windows away from the other.
     /// </summary>
     public static void RepairIfNeeded()
     {
@@ -90,7 +92,8 @@ public static class StartupManager
             if (key?.GetValue(ValueName) is not string existing) return;
 
             var expected = CommandLine;
-            if (!string.IsNullOrEmpty(expected) && !string.Equals(existing, expected, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(expected) && !string.Equals(existing, expected, StringComparison.OrdinalIgnoreCase) &&
+                !File.Exists(ExecutableIn(existing)))
             {
                 key.SetValue(ValueName, expected, RegistryValueKind.String);
                 Log.Info("Startup entry re-pointed at the current executable.");
@@ -100,5 +103,43 @@ public static class StartupManager
         {
             Log.Warn("Could not repair the startup entry.", ex);
         }
+    }
+
+    /// <summary>True when a Run entry exists but the program it names is gone.</summary>
+    public static bool HasStaleEntry()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+            return key?.GetValue(ValueName) is string command && command.Trim().Length > 0 && !File.Exists(ExecutableIn(command));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not read the startup registry key.", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The program a Run command starts. A quoted path is taken as is; an unquoted one is read the way
+    /// CreateProcess reads it, trying each space in turn, so "C:\Program Files\App\App.exe --x" works.
+    /// </summary>
+    private static string ExecutableIn(string command)
+    {
+        command = command.Trim();
+        if (command.StartsWith('"'))
+        {
+            int end = command.IndexOf('"', 1);
+            return end > 1 ? command[1..end] : command.Trim('"');
+        }
+
+        for (int space = command.IndexOf(' '); space > 0; space = command.IndexOf(' ', space + 1))
+        {
+            var prefix = command[..space];
+            if (File.Exists(prefix)) return prefix;
+            if (File.Exists(prefix + ".exe")) return prefix + ".exe";
+        }
+
+        return command;
     }
 }

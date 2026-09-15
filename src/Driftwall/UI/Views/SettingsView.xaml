@@ -662,29 +662,6 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
-                                <TextBlock Text="Rendered quality" Style="{StaticResource Text.Subheading}" />
-                                <TextBlock Text="Higher looks better on a large screen and takes more disk space."
-                                           Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,2,0,0" />
-                            </StackPanel>
-                            <Slider Grid.Column="1" Width="180" VerticalAlignment="Center"
-                                    Minimum="60" Maximum="100"
-                                    TickFrequency="1" IsSnapToTickEnabled="True"
-                                    Value="{Binding OutputQuality}" />
-                            <TextBlock Grid.Column="2"
-                                       Text="{Binding OutputQualityLabel}"
-                                       Style="{StaticResource Text.Caption}"
-                                       Foreground="{DynamicResource Brush.TextSecondary}"
-                                       MinWidth="150" TextAlignment="Right"
-                                       Margin="12,0,0,0" VerticalAlignment="Center" />
-                        </Grid>
-
-                        <Grid MinHeight="46" Margin="0,8,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                                 <TextBlock Text="Show the photo credit on the wallpaper"

@@ -113,14 +113,16 @@ public sealed class PixabaySource : PhotoSourceBase
             throw new SourceException("Pixabay returned an unexpected response shape.");
 
         var items = new List<PhotoItem>(hits.GetArrayLength());
+        var sawHits = false;
         var sawFullResolution = false;
 
         foreach (var hit in hits.EnumerateArray())
         {
             if (hit.ValueKind != JsonValueKind.Object) continue;
+            sawHits = true;
             sawFullResolution |= GetString(hit, "fullHDURL") is not null || GetString(hit, "imageURL") is not null;
 
-            var item = MapHit(hit, context.TargetWidth);
+            var item = MapHit(hit, context.TargetWidth, context.TargetHeight);
             if (item is not null && Matches(item, query)) items.Add(item);
         }
 
@@ -131,26 +133,32 @@ public sealed class PixabaySource : PhotoSourceBase
             ? reachable > pageSize
             : (long)page * pageSize < reachable;
 
-        if (items.Count == 0 && !hasMore) return PhotoPage.Empty;
-
         // fullHDURL/imageURL ship only to accounts approved for full API access; without them the
-        // best available file is largeImageURL at 1280px, which under-fills a 1080p desktop.
-        var notice = items.Count > 0 && !sawFullResolution
-            ? "Pixabay is only serving 1280px images. Request full API access on pixabay.com for sharper wallpapers."
+        // best available file is largeImageURL at 1280px. Items are sized by the file they really
+        // serve, so on a large display they are filtered out above and this notice says why.
+        var notice = sawHits && !sawFullResolution
+            ? "Pixabay is only serving 1280px images, which are too small for large displays. Request full API access on pixabay.com for sharper wallpapers."
             : null;
+
+        if (items.Count == 0 && !hasMore && notice is null) return PhotoPage.Empty;
 
         return new PhotoPage(items, hasMore, notice);
     }
 
-    private PhotoItem? MapHit(JsonElement hit, int targetWidth)
+    private PhotoItem? MapHit(JsonElement hit, int targetWidth, int targetHeight)
     {
         var id = ReadId(hit);
         if (id is null) return null;
 
         var webformat = GetString(hit, "webformatURL");
         var large = GetString(hit, "largeImageURL");
-        var full = PickFullUrl(hit, large, webformat, targetWidth);
+        var (full, longestSide) = PickFullUrl(hit, large, webformat, targetWidth, targetHeight);
         if (full is null) return null;
+
+        // imageWidth/imageHeight describe the ORIGINAL upload, but only accounts with full API access
+        // are given that file. Sizing the item by what FullUrl really serves is what lets the
+        // resolution filter turn away a 1280px file headed for a 4K display.
+        var (width, height) = ServedSize(GetInt(hit, "imageWidth"), GetInt(hit, "imageHeight"), longestSide);
 
         var tags = SplitTags(GetString(hit, "tags"));
         var user = GetString(hit, "user");
@@ -165,10 +173,8 @@ public sealed class PixabaySource : PhotoSourceBase
             ThumbnailUrl = WebformatVariant(webformat, "_340") ?? GetString(hit, "previewURL") ?? webformat,
             PreviewUrl = large ?? WebformatVariant(webformat, "_960") ?? webformat,
             FullUrl = full,
-            // imageWidth/imageHeight describe the ORIGINAL upload, which is usually larger than the
-            // file FullUrl actually serves (1920px for fullHDURL, 1280px for largeImageURL).
-            Width = GetInt(hit, "imageWidth"),
-            Height = GetInt(hit, "imageHeight"),
+            Width = width,
+            Height = height,
             Title = TitleFrom(tags),
             AuthorName = user,
             AuthorUrl = user is null || userId <= 0 ? null : $"https://pixabay.com/users/{Net.Esc(user)}-{userId}/",
@@ -236,14 +242,39 @@ public sealed class PixabaySource : PhotoSourceBase
         return item.Width >= query.MinWidth && item.Height >= query.MinHeight;
     }
 
-    private static string? PickFullUrl(JsonElement hit, string? large, string? webformat, int targetWidth)
+    /// <summary>Longest side of the largeImageURL and webformatURL files, per the API documentation.</summary>
+    private const int LargeImageSide = 1280;
+    private const int WebformatSide = 640;
+
+    /// <summary>
+    /// The best file for the largest display, with the longest side that file is scaled down to
+    /// (0 for the original upload, which is served at its own size).
+    /// </summary>
+    private static (string? Url, int LongestSide) PickFullUrl(JsonElement hit, string? large, string? webformat, int targetWidth, int targetHeight)
     {
         var fullHd = GetString(hit, "fullHDURL");
         var original = GetString(hit, "imageURL");
 
-        return targetWidth > FullHdWidth
-            ? original ?? fullHd ?? large ?? webformat
-            : fullHd ?? original ?? large ?? webformat;
+        if (original is not null)
+        {
+            // The 1920px copy will do only when it still covers the display both ways. A 16:9 photo
+            // on a 16:10 display, or a panorama, needs more height than that copy has.
+            var (width, height) = ServedSize(GetInt(hit, "imageWidth"), GetInt(hit, "imageHeight"), FullHdWidth);
+            if (fullHd is null || width < targetWidth || height < targetHeight) return (original, 0);
+        }
+
+        if (fullHd is not null) return (fullHd, FullHdWidth);
+        if (large is not null) return (large, LargeImageSide);
+        return (webformat, WebformatSide);
+    }
+
+    /// <summary>The size of a copy scaled so its longest side is at most <paramref name="longestSide"/>.</summary>
+    private static (int Width, int Height) ServedSize(int width, int height, int longestSide)
+    {
+        if (longestSide <= 0 || width <= 0 || height <= 0) return (width, height);
+
+        double scale = Math.Min(1.0, (double)longestSide / Math.Max(width, height));
+        return ((int)Math.Round(width * scale), (int)Math.Round(height * scale));
     }
 
     /// <summary>Swaps the size token in a webformatURL ("..._640.jpg" to "..._340.jpg").</summary>

@@ -20,8 +20,18 @@ public sealed class RotationService : IDisposable
     private const int QueueRefillThreshold = 8;
     private const int FetchPageSize = 30;
 
+    /// <summary>How many pages in a row one change may fetch while every photo so far was a repeat.</summary>
+    private const int MaxRefillRounds = 3;
+
     /// <summary>How many queued photos one change may burn through before giving up.</summary>
     private const int MaxApplyAttempts = 3;
+
+    /// <summary>
+    /// How many photos one change may pass over because their real file is too small for a display,
+    /// before it stops checking and uses the next photo as it is.
+    /// </summary>
+    private const int MaxUndersizedSkips = 6;
+
 
     private readonly SettingsStore _settingsStore;
     private readonly SourceRegistry _registry;
@@ -33,6 +43,20 @@ public sealed class RotationService : IDisposable
     private readonly List<PhotoItem> _queue = new();
     private readonly List<PhotoItem> _history = new();
     private readonly HashSet<string> _recentKeys = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Photos a refill turned away only because they were shown recently, kept in case every source
+    /// runs out of new ones. Guarded by _queueGate.
+    /// </summary>
+    private readonly Dictionary<string, PhotoItem> _repeatCandidates = new(StringComparer.Ordinal);
+
+    /// <summary>When each recent photo was last shown, as a rising counter. Guarded by _queueGate.</summary>
+    private readonly Dictionary<string, long> _recentStamp = new(StringComparer.Ordinal);
+    private long _stampCounter;
+
+    /// <summary>Bumped by <see cref="ResetQueue"/>, so a refill that started before it throws its results away.</summary>
+    private int _generation;
+
     private readonly Dictionary<string, int> _pageBySelection = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _refillLock = new(1, 1);
 
@@ -48,8 +72,15 @@ public sealed class RotationService : IDisposable
         _engine = engine;
         _state = AppState.Load();
 
-        foreach (var key in _state.RecentKeys) _recentKeys.Add(key);
+        // RecentKeys is saved oldest first, so the order photos were shown in survives a restart.
+        foreach (var key in _state.RecentKeys)
+        {
+            _recentKeys.Add(key);
+            _recentStamp[key] = ++_stampCounter;
+        }
+
         _history.AddRange(_state.CurrentPhotos);
+        foreach (var photo in _state.CurrentPhotos) _recentStamp[photo.Key] = ++_stampCounter;
         _historyPosition = _history.Count - 1;
     }
 
@@ -72,6 +103,8 @@ public sealed class RotationService : IDisposable
         {
             _queue.Clear();
             _pageBySelection.Clear();
+            _repeatCandidates.Clear();
+            _generation++;
         }
 
         CancelRefill();
@@ -91,6 +124,8 @@ public sealed class RotationService : IDisposable
 
         var monitors = _engine.ActiveMonitors(Settings);
         var needed = Settings.MultiMonitor == MultiMonitorMode.DifferentPerMonitor ? monitors.Count : 1;
+        int undersizedSkips = 0;
+        List<PhotoItem>? lastUndersized = null;
 
         // A photo that will not download (a provider throttling, a dead link) costs one attempt, not
         // the whole change. Otherwise the timer leaves the old wallpaper up for another interval over
@@ -98,10 +133,47 @@ public sealed class RotationService : IDisposable
         for (int attempt = 1; attempt <= MaxApplyAttempts; attempt++)
         {
             var picks = await TakeAsync(needed, monitors, ct).ConfigureAwait(false);
+            bool checkSize = undersizedSkips < MaxUndersizedSkips;
+
             if (picks.Count == 0)
             {
-                Report("No photos available. Check your sources in Settings.", isError: true);
-                return false;
+                if (lastUndersized is null)
+                {
+                    Report("No photos available. Check your sources in Settings.", isError: true);
+                    return false;
+                }
+
+                // Nothing else is left. The last photo turned away as too small beats showing nothing,
+                // so it is used as it is, straight from here rather than through the queue.
+                Log.Warn("Every available photo was too small for your displays, so the last one is used as it is. Adding a source with larger photos, or lowering the minimum resolution in Settings, avoids this.");
+                picks = lastUndersized;
+                lastUndersized = null;
+                checkSize = false;
+                undersizedSkips = MaxUndersizedSkips;
+            }
+
+
+            // A photo whose real file is too small for its display is passed over without costing an
+            // attempt. The skips are capped so a source full of small photos cannot stall rotation.
+            if (checkSize)
+            {
+                var undersized = await FindUndersizedAsync(picks, monitors, ct).ConfigureAwait(false);
+                if (ct.IsCancellationRequested) return false;
+                if (undersized.Count > 0)
+                {
+                    undersizedSkips += undersized.Count;
+                    lastUndersized = picks;
+
+                    // Only the photos that are too small are replaced. Any others go back to the head
+                    // of the queue, no longer counted as shown, and are taken again straight away.
+                    var usable = picks.Where(p => !undersized.Contains(p)).ToList();
+                    if (usable.Count > 0) RequeueFront(usable);
+                    if (undersizedSkips >= MaxUndersizedSkips)
+                        Log.Warn($"{undersizedSkips} photos in a row were too small for your displays, so the next one is used as it is. Adding a source with larger photos, or lowering the minimum resolution in Settings, avoids this.");
+
+                    attempt--;
+                    continue;
+                }
             }
 
             RecordHistory(picks);
@@ -111,9 +183,11 @@ public sealed class RotationService : IDisposable
                 return true;
             }
 
+            // Undone before anything else, cancellation included, so Previous never leads to a photo
+            // that did not reach the desktop.
+            ForgetHistory(picks);
             if (ct.IsCancellationRequested) return false;
 
-            ForgetHistory(picks);
             Log.Info($"Could not use {string.Join(", ", picks.Select(p => p.Key))}; trying the next photo ({attempt}/{MaxApplyAttempts}).");
         }
 
@@ -225,6 +299,89 @@ public sealed class RotationService : IDisposable
     }
 
     /// <summary>
+    /// Returns the picks whose downloaded file would be enlarged past the "skip photos that are too
+    /// small" limit on a display they are headed for. What a source reports is only a promise:
+    /// Pixabay, for one, reports the original upload and serves a 1280px copy. So the real file is
+    /// measured. A photo that fails to download is left to the apply attempt, which handles that.
+    /// </summary>
+    private async Task<List<PhotoItem>> FindUndersizedAsync(
+        IReadOnlyList<PhotoItem> picks, IReadOnlyList<MonitorInfo> monitors, CancellationToken ct)
+    {
+        var undersized = new List<PhotoItem>();
+        var settings = Settings;
+        if (!settings.RejectLowResolution || settings.MinResolutionRatio <= 0 || monitors.Count == 0) return undersized;
+
+        double limit = 1.0 / settings.MinResolutionRatio;
+        var assignment = BuildAssignment(picks, monitors);
+
+        try
+        {
+            foreach (var photo in picks)
+            {
+                var path = await _cache.GetFullAsync(photo, ct).ConfigureAwait(false);
+                if (path is null) continue;
+
+                var (width, height) = await ImageComposer.ReadDisplayDimensionsAsync(path, ct).ConfigureAwait(false);
+                if (width <= 0 || height <= 0) continue;
+
+                var (factor, display) = LargestEnlargement(photo, width, height, monitors, assignment, settings);
+                if (factor <= limit + 1e-6) continue;
+
+                undersized.Add(photo);
+                Log.Info($"Skipped {photo.Key}: its {width}x{height} file would be enlarged {factor:0.00}x on {display}, past the {limit:0.00}x the minimum resolution allows.");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Let the apply attempt meet the cancellation and report it the usual way.
+            undersized.Clear();
+        }
+
+        return undersized;
+    }
+
+    /// <summary>The largest enlargement a photo of this size needs on the displays it is assigned to.</summary>
+    private static (double Factor, string Display) LargestEnlargement(
+        PhotoItem photo, int width, int height, IReadOnlyList<MonitorInfo> monitors,
+        Dictionary<string, PhotoItem> assignment, AppSettings settings)
+    {
+        if (settings.MultiMonitor == MultiMonitorMode.SpanAcrossMonitors)
+        {
+            int spanWidth = monitors.Max(m => m.X + m.Width) - monitors.Min(m => m.X);
+            int spanHeight = monitors.Max(m => m.Y + m.Height) - monitors.Min(m => m.Y);
+            return (ImageComposer.EnlargementFactor(width, height, spanWidth, spanHeight, settings.Scaling),
+                    $"the {spanWidth} x {spanHeight} span");
+        }
+
+        double worst = 0;
+        string display = string.Empty;
+        foreach (var monitor in monitors)
+        {
+            if (!assignment.TryGetValue(monitor.Id, out var assigned) || !ReferenceEquals(assigned, photo)) continue;
+
+            double factor = ImageComposer.EnlargementFactor(
+                width, height, monitor.Width, monitor.Height, WallpaperEngine.ScalingFor(monitor, settings));
+            if (factor > worst)
+            {
+                worst = factor;
+                display = $"{monitor.Name} ({monitor.ResolutionLabel})";
+            }
+        }
+
+        return (worst, display);
+    }
+
+    /// <summary>Puts photos back at the head of the queue, no longer counted as recently shown.</summary>
+    private void RequeueFront(IReadOnlyList<PhotoItem> photos)
+    {
+        lock (_queueGate)
+        {
+            foreach (var photo in photos) _recentKeys.Remove(photo.Key);
+            _queue.InsertRange(0, photos);
+        }
+    }
+
+    /// <summary>
     /// Maps photos onto monitors. With one photo it goes everywhere; with several, each monitor gets
     /// the best orientation match still available so a portrait display is not handed a landscape shot.
     /// </summary>
@@ -263,7 +420,14 @@ public sealed class RotationService : IDisposable
     {
         _state.CurrentPhotos = photos;
         _state.LastChangeUtc = DateTimeOffset.UtcNow;
-        _state.RecentKeys = _recentKeys.TakeLast(Math.Max(50, Settings.NoRepeatWindow)).ToList();
+        lock (_queueGate)
+        {
+            // Oldest first, so the order photos were shown in survives a restart.
+            _state.RecentKeys = _recentKeys
+                .OrderBy(key => _recentStamp.TryGetValue(key, out long stamp) ? stamp : long.MaxValue)
+                .TakeLast(Math.Max(50, Settings.NoRepeatWindow))
+                .ToList();
+        }
         _state.Save();
     }
 
@@ -273,7 +437,21 @@ public sealed class RotationService : IDisposable
     private async Task<List<PhotoItem>> TakeAsync(int count, IReadOnlyList<MonitorInfo> monitors, CancellationToken ct)
     {
         if (QueueLength < Math.Max(count, QueueRefillThreshold))
-            await RefillAsync(ct).ConfigureAwait(false);
+        {
+            // Every source starts again at its first page when the app starts, and those photos have
+            // often all been shown recently. When a round brings back nothing but repeats, the next
+            // page is fetched straight away instead of failing the change.
+            for (int round = 1; round <= MaxRefillRounds; round++)
+            {
+                bool onlyRepeats = await RefillAsync(ct).ConfigureAwait(false);
+                if (!onlyRepeats || QueueLength >= count) break;
+                if (round < MaxRefillRounds) Log.Info("Every photo fetched was shown recently; trying the next page.");
+            }
+
+            // A narrow search can simply run out of photos that have not been shown lately. Showing
+            // an older one again beats leaving the wallpaper stuck with "No photos available".
+            if (QueueLength < count) EnqueueOldestRepeats(count);
+        }
 
         var picks = new List<PhotoItem>(count);
         lock (_queueGate)
@@ -292,6 +470,15 @@ public sealed class RotationService : IDisposable
 
                 picks.Add(_queue[index]);
                 _queue.RemoveAt(index);
+
+                // From the moment it leaves the queue a pick counts as recently shown, inside this lock,
+                // so a refill running while it downloads cannot queue it again, and a photo turned away
+                // as too small stays out of rotation for the no-repeat window like any photo already seen.
+                _recentKeys.Add(picks[^1].Key);
+
+                // Stamped as just shown too, so a pick still downloading, or one turned away as too small,
+                // sorts behind every other repeat instead of being handed out again first.
+                _recentStamp[picks[^1].Key] = ++_stampCounter;
             }
         }
 
@@ -327,20 +514,27 @@ public sealed class RotationService : IDisposable
     /// Fetches from every enabled source and merges the results, interleaved by weight so a source
     /// with weight 3 contributes roughly three times as often as one with weight 1.
     /// </summary>
-    private async Task RefillAsync(CancellationToken ct)
+    /// <returns>
+    /// True when sources returned photos but every one was already queued or shown recently, so
+    /// fetching the next page could still help.
+    /// </returns>
+    private async Task<bool> RefillAsync(CancellationToken ct)
     {
-        if (!await _refillLock.WaitAsync(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false)) return;
+        if (!await _refillLock.WaitAsync(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false)) return false;
 
         try
         {
-            if (QueueLength >= QueueTarget) return;
+            if (QueueLength >= QueueTarget) return false;
+
+            int generation;
+            lock (_queueGate) generation = _generation;
 
             var settings = Settings;
             var selections = _registry.Resolve(settings).ToList();
             if (selections.Count == 0)
             {
                 Report("No sources are enabled. Add one in Settings.", isError: true);
-                return;
+                return false;
             }
 
             var monitors = _engine.ActiveMonitors(settings);
@@ -396,12 +590,39 @@ public sealed class RotationService : IDisposable
             }
 
             var merged = Interleave(buckets);
-            int added = Enqueue(merged, settings);
+            var repeats = new List<PhotoItem>();
+            int added = Enqueue(merged, settings, repeats, generation);
 
-            if (added == 0 && problems.Count > 0)
-                Report(problems[0], isError: true);
-            else if (added > 0)
+            if (added > 0)
+            {
                 Log.Info($"Queue topped up with {added} photos ({QueueLength} waiting).");
+                return false;
+            }
+
+            // Photos came back, but all of them were already queued or shown recently. The next page
+            // may well hold new ones, which is worth a try before reporting a problem.
+            if (merged.Count > 0)
+            {
+                lock (_queueGate)
+                {
+                    // Photos from sources the user has changed since this refill started are no use.
+                    // Returning true makes the caller fetch again, for the sources as they are now.
+                    if (generation != _generation) return true;
+                    foreach (var photo in repeats) _repeatCandidates[photo.Key] = photo;
+                }
+
+                // A source that failed is reported, and is not asked straight away for another page.
+                if (problems.Count > 0)
+                {
+                    Report(problems[0], isError: true);
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (problems.Count > 0) Report(problems[0], isError: true);
+            return false;
         }
         finally
         {
@@ -433,18 +654,65 @@ public sealed class RotationService : IDisposable
         return merged;
     }
 
-    /// <summary>Adds photos to the queue, skipping duplicates and anything shown too recently.</summary>
-    private int Enqueue(List<PhotoItem> photos, AppSettings settings)
+    /// <summary>
+    /// Queues just enough photos for this change from those every source has already shown recently,
+    /// the ones shown longest ago first. The queue stays short, so refills keep paging on and a photo
+    /// never shown still comes before the next repeat. Photos on the desktop now are left out.
+    /// </summary>
+    private void EnqueueOldestRepeats(int count)
+    {
+        var onScreen = CurrentPhotos.Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
+        List<PhotoItem> chosen;
+
+        lock (_queueGate)
+        {
+            if (_repeatCandidates.Count == 0) return;
+
+            // A key marked recent this session without ever being shown (a dead link, a photo too
+            // small) has no stamp and goes last rather than first.
+            var queued = _queue.Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
+            chosen = _repeatCandidates.Values
+                .Where(p => !onScreen.Contains(p.Key) && !queued.Contains(p.Key))
+                .OrderBy(p => _recentStamp.TryGetValue(p.Key, out long stamp) ? stamp : long.MaxValue)
+                .Take(Math.Max(1, count - _queue.Count))
+                .ToList();
+
+            if (Settings.Shuffle) chosen = chosen.OrderBy(_ => Random.Shared.Next()).ToList();
+
+            foreach (var photo in chosen)
+            {
+                _queue.Add(photo);
+                _repeatCandidates.Remove(photo.Key);
+            }
+        }
+
+        if (chosen.Count > 0)
+            Log.Info($"Every photo your sources returned was shown recently, so {chosen.Count} shown longest ago {(chosen.Count == 1 ? "comes" : "come")} round again.");
+    }
+
+    /// <summary>
+    /// Adds photos to the queue, skipping duplicates and anything shown too recently. Photos skipped
+    /// only for being recent are added to <paramref name="skippedAsRecent"/> when it is given.
+    /// </summary>
+    private int Enqueue(List<PhotoItem> photos, AppSettings settings, List<PhotoItem>? skippedAsRecent = null, int? generation = null)
     {
         int added = 0;
         lock (_queueGate)
         {
+            // Results fetched for sources the user has changed since are dropped.
+            if (generation is not null && generation != _generation) return 0;
+
             var queued = _queue.Select(p => p.Key).ToHashSet(StringComparer.Ordinal);
 
             foreach (var photo in photos)
             {
                 if (!queued.Add(photo.Key)) continue;
-                if (settings.NoRepeatWindow > 0 && _recentKeys.Contains(photo.Key)) continue;
+                if (settings.NoRepeatWindow > 0 && _recentKeys.Contains(photo.Key))
+                {
+                    skippedAsRecent?.Add(photo);
+                    continue;
+                }
+
 
                 _queue.Add(photo);
                 added++;
@@ -488,22 +756,28 @@ public sealed class RotationService : IDisposable
 
     private void RecordHistory(IReadOnlyList<PhotoItem> picks)
     {
-        foreach (var photo in picks)
+        // Under the queue lock: background refills read the recent set at the same time.
+        lock (_queueGate)
         {
-            _history.Add(photo);
-            _recentKeys.Add(photo.Key);
-        }
+            foreach (var photo in picks)
+            {
+                _history.Add(photo);
+                _recentKeys.Add(photo.Key);
+                _recentStamp[photo.Key] = ++_stampCounter;
+            }
 
-        int window = Math.Max(50, Settings.NoRepeatWindow);
-        if (_history.Count > window) _history.RemoveRange(0, _history.Count - window);
-        if (_recentKeys.Count > window * 2)
-        {
-            // The set only guards against repeats, so trimming it to the live history is enough.
-            _recentKeys.Clear();
-            foreach (var photo in _history) _recentKeys.Add(photo.Key);
-        }
+            int window = Math.Max(50, Settings.NoRepeatWindow);
+            if (_history.Count > window) _history.RemoveRange(0, _history.Count - window);
+            if (_recentKeys.Count > window * 2)
+            {
+                // The set only guards against repeats, so trimming it to the live history is enough.
+                _recentKeys.Clear();
+                foreach (var photo in _history) _recentKeys.Add(photo.Key);
+                foreach (var key in _recentStamp.Keys.Where(k => !_recentKeys.Contains(k)).ToList()) _recentStamp.Remove(key);
+            }
 
-        _historyPosition = _history.Count - 1;
+            _historyPosition = _history.Count - 1;
+        }
     }
 
     /// <summary>
@@ -513,9 +787,17 @@ public sealed class RotationService : IDisposable
     /// </summary>
     private void ForgetHistory(IReadOnlyList<PhotoItem> picks)
     {
-        int start = Math.Max(0, _history.Count - picks.Count);
-        _history.RemoveRange(start, _history.Count - start);
-        _historyPosition = _history.Count - 1;
+        // These exact entries, not the last few: a photo applied from the tray meanwhile may come after them.
+        lock (_queueGate)
+        {
+            foreach (var photo in picks)
+            {
+                int index = _history.FindLastIndex(entry => ReferenceEquals(entry, photo));
+                if (index >= 0) _history.RemoveAt(index);
+            }
+
+            _historyPosition = _history.Count - 1;
+        }
     }
 
     // ---------------- prefetch ----------------

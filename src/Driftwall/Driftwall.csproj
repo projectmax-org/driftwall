@@ -18,10 +18,10 @@
     <Copyright>Copyright © 2026 Project Max</Copyright>
     <PackageProjectUrl>https://projectmax-org.github.io/driftwall/</PackageProjectUrl>
     <RepositoryUrl>https://github.com/projectmax-org/driftwall</RepositoryUrl>
-    <Version>1.0.1</Version>
-    <FileVersion>1.0.1.0</FileVersion>
-    <AssemblyVersion>1.0.1.0</AssemblyVersion>
-    <!-- Keep "Product version" in the file's properties a plain 1.0.1, not 1.0.1+<commit>. -->
+    <!-- The only version to edit. AssemblyVersion and FileVersion follow it, and the updater compares
+         AssemblyVersion with the release tag, so a stale copy would reinstall the same release forever. -->
+    <Version>1.0.2</Version>
+    <!-- Keep "Product version" in the file's properties a plain 1.2.3, not 1.2.3+<commit>. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>

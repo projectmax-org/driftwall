@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Driftwall.Scheduling;
@@ -66,6 +68,7 @@ public sealed class UpdateService : IDisposable
     private string? _downloadedPath;
     private Version? _notifiedVersion;
     private bool _disposed;
+    private int _setupPending;
 
     public UpdateService(SettingsStore settings, HttpClient http)
     {
@@ -85,6 +88,9 @@ public sealed class UpdateService : IDisposable
 
     /// <summary>Set by the app: tells the user a version is waiting when it cannot be installed unasked.</summary>
     public Action<UpdateInfo>? NotifyAvailable { get; set; }
+
+    /// <summary>Set by the app: saves settings and collections before setup may stop the process.</summary>
+    public Action? SaveBeforeUpdate { get; set; }
 
     public UpdateState State
     {
@@ -121,6 +127,94 @@ public sealed class UpdateService : IDisposable
     /// <summary>True when this copy was put here by the setup wizard, which then also does the updating.</summary>
     public static bool IsInstalled =>
         File.Exists(Path.Combine(Path.GetDirectoryName(ExecutablePath) ?? string.Empty, "unins000.exe"));
+
+    private const string UninstallKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6F2E9D0C-3B7A-4E15-9C4D-2A8F1B5D7E30}_is1";
+
+    /// <summary>
+    /// True when this copy was installed for all users, as the uninstall registration in HKLM records.
+    /// The folder alone cannot tell: an administrator can install for everyone anywhere.
+    /// </summary>
+    public static bool IsInstalledForAllUsers
+    {
+        get
+        {
+            if (!IsInstalled) return false;
+            try
+            {
+                using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(UninstallKey);
+                if (key?.GetValue("InstallLocation") is not string location || location.Length == 0) return false;
+
+                var registered = Path.GetFullPath(location).TrimEnd('\\');
+                var here = Path.GetFullPath(Path.GetDirectoryName(ExecutablePath) ?? string.Empty).TrimEnd('\\');
+                return string.Equals(registered, here, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Could not read the install registration.", ex);
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when an update can go in without asking anyone: a per-user install, an all-users install
+    /// running elevated, or a portable copy in a folder this account can write to. Anything else
+    /// would raise a UAC prompt nobody asked for, or fail after the app had already closed.
+    /// </summary>
+    public static bool CanReplaceItself => IsInstalled || IsFolderWritable(Path.GetDirectoryName(ExecutablePath));
+
+    /// <summary>Whether the setup wizard that installed this copy had the named task ticked, as Inno Setup records it.</summary>
+    public static bool InstallerSelectedTask(string task)
+    {
+        if (!IsInstalled) return false;
+        try
+        {
+            var hive = IsInstalledForAllUsers ? Microsoft.Win32.Registry.LocalMachine : Microsoft.Win32.Registry.CurrentUser;
+            using var key = hive.OpenSubKey(UninstallKey);
+            return key?.GetValue("Inno Setup: Selected Tasks") is string tasks &&
+                   tasks.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                        .Contains(task, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not read the tasks setup recorded.", ex);
+            return false;
+        }
+    }
+
+    public static bool CanInstallUnattended =>
+        IsInstalled ? !IsInstalledForAllUsers || IsElevated : IsFolderWritable(Path.GetDirectoryName(ExecutablePath));
+
+    private static bool IsElevated
+    {
+        get
+        {
+            try
+            {
+                using var identity = WindowsIdentity.GetCurrent();
+                return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+    }
+
+    private static bool IsFolderWritable(string? directory)
+    {
+        if (string.IsNullOrEmpty(directory)) return false;
+        try
+        {
+            var probe = Path.Combine(directory, $".driftwall-write-test-{Environment.ProcessId}.tmp");
+            using (File.Create(probe, 1, FileOptions.DeleteOnClose)) { }
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Starts the daily check. Called once the app is up and the first wallpaper is on its way.</summary>
     public void Start()
@@ -358,12 +452,14 @@ public sealed class UpdateService : IDisposable
         }
         if (actual != expected) return "its checksum does not match the one published with the release";
 
-        var currentSigner = SignerOf(ExecutablePath);
-        if (currentSigner is not null)
+        // Once this copy is signed, a download must carry a signature Windows verifies, from the same
+        // publisher. That holds after this copy's own certificate expires: having been signed at all
+        // is what counts, so the check never quietly switches itself off.
+        var currentPublisher = PublisherOf(ExecutablePath);
+        if (currentPublisher is not null)
         {
-            var newSigner = SignerOf(path);
-            if (newSigner is null) return "this copy is signed but the download is not";
-            if (!string.Equals(newSigner, currentSigner, StringComparison.Ordinal))
+            if (!HasValidSignature(path)) return "this copy is signed but the download has no valid signature";
+            if (!string.Equals(PublisherOf(path), currentPublisher, StringComparison.Ordinal))
                 return "the download is signed by someone else";
         }
 
@@ -371,11 +467,85 @@ public sealed class UpdateService : IDisposable
     }
 
     /// <summary>
-    /// The subject of a file's Authenticode signer, or null when the file is unsigned or the
-    /// certificate does not chain to a root Windows trusts. The chain check is what stops a
-    /// self-made certificate with a copied name from passing as the same publisher.
+    /// Whether Windows verifies a file's Authenticode signature: intact, chained to a trusted root,
+    /// and valid when it was made, which a timestamp proves even once the certificate has expired.
+    /// This is what stops a copied certificate, or a signature pasted onto another file, from passing.
     /// </summary>
-    private static string? SignerOf(string path)
+    private static bool HasValidSignature(string path)
+    {
+        var file = new WintrustFileInfo { cbStruct = Marshal.SizeOf<WintrustFileInfo>(), pcwszFilePath = path };
+        IntPtr filePointer = Marshal.AllocHGlobal(file.cbStruct);
+        bool marshalled = false;
+        try
+        {
+            Marshal.StructureToPtr(file, filePointer, false);
+            marshalled = true;
+
+            var data = new WintrustData
+            {
+                cbStruct = Marshal.SizeOf<WintrustData>(),
+                dwUIChoice = 2,          // WTD_UI_NONE
+                fdwRevocationChecks = 0, // WTD_REVOKE_NONE
+                dwUnionChoice = 1,       // WTD_CHOICE_FILE
+                pFile = filePointer,
+                dwStateAction = 1,       // WTD_STATEACTION_VERIFY
+                dwProvFlags = 0x40,      // WTD_REVOCATION_CHECK_NONE
+            };
+
+            int result = WinVerifyTrust(new IntPtr(-1), GenericVerifyV2, ref data);
+            data.dwStateAction = 2;      // WTD_STATEACTION_CLOSE
+            WinVerifyTrust(new IntPtr(-1), GenericVerifyV2, ref data);
+            return result == 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not verify the signature of " + path, ex);
+            return false;
+        }
+        finally
+        {
+            if (marshalled) Marshal.DestroyStructure<WintrustFileInfo>(filePointer);
+            Marshal.FreeHGlobal(filePointer);
+        }
+    }
+
+    private static readonly Guid GenericVerifyV2 = new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+    [DllImport("wintrust.dll", ExactSpelling = true)]
+    private static extern int WinVerifyTrust(IntPtr window, [MarshalAs(UnmanagedType.LPStruct)] Guid action, ref WintrustData data);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WintrustFileInfo
+    {
+        public int cbStruct;
+        public string pcwszFilePath;
+        public IntPtr hFile;
+        public IntPtr pgKnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WintrustData
+    {
+        public int cbStruct;
+        public IntPtr pPolicyCallbackData;
+        public IntPtr pSIPClientData;
+        public int dwUIChoice;
+        public int fdwRevocationChecks;
+        public int dwUnionChoice;
+        public IntPtr pFile;
+        public int dwStateAction;
+        public IntPtr hWVTStateData;
+        public IntPtr pwszURLReference;
+        public int dwProvFlags;
+        public int dwUIContext;
+        public IntPtr pSignatureSettings;
+    }
+
+    /// <summary>
+    /// The subject of the certificate in a file's Authenticode signature, or null when it has none.
+    /// It says nothing about validity: <see cref="HasValidSignature"/> does that.
+    /// </summary>
+    private static string? PublisherOf(string path)
     {
         try
         {
@@ -384,11 +554,7 @@ public sealed class UpdateService : IDisposable
 #pragma warning disable SYSLIB0057
             using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
 #pragma warning restore SYSLIB0057
-
-            using var chain = new X509Chain();
-            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-            chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.3")); // code signing
-            return chain.Build(certificate) ? certificate.Subject : null;
+            return certificate.Subject;
         }
         catch (CryptographicException)
         {
@@ -407,52 +573,81 @@ public sealed class UpdateService : IDisposable
         var path = _downloadedPath;
         if (path is null || !File.Exists(path) || Available is null) return false;
 
+        // One setup at a time: a second would raise a second approval prompt and race the first.
+        if (Volatile.Read(ref _setupPending) != 0) return false;
+
         try
         {
+            var exeDirectory = Path.GetDirectoryName(ExecutablePath);
+            if (!IsInstalled && !IsFolderWritable(exeDirectory))
+            {
+                // Leaving now would only close the app: the swap script could not replace the file.
+                State = UpdateState.Ready;
+                Message = $"Driftwall cannot replace itself in {exeDirectory}. Download {Available.Version} from the releases page instead.";
+                Log.Warn(Message);
+                return false;
+            }
+
             State = UpdateState.Installing;
             Message = $"Installing Driftwall {Available.Version}...";
             _settings.Save();
+            SaveBeforeUpdate?.Invoke();
 
             if (IsInstalled)
             {
-                var exeDir = Path.GetDirectoryName(ExecutablePath) ?? string.Empty;
-                bool allUsers = IsUnder(exeDir, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles))
-                             || IsUnder(exeDir, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86));
+                bool allUsers = IsInstalledForAllUsers;
 
                 // The wizard itself, silently. It stops this process, replaces the files, and the
                 // RELAUNCH switch makes it start the new version the way the user last saw it.
                 var arguments = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART {(allUsers ? "/ALLUSERS" : "/CURRENTUSER")} /RELAUNCH={(relaunchVisible ? 2 : 1)}";
-                Process.Start(new ProcessStartInfo(path, arguments) { UseShellExecute = true });
+                var setup = Process.Start(new ProcessStartInfo(path, arguments) { UseShellExecute = true });
+
+                if (allUsers && !IsElevated)
+                {
+                    // Setup asks for administrator approval itself. Exiting now would leave nothing
+                    // running if the prompt were refused, so the app stays up: an approved setup stops
+                    // it, and a refused one simply ends, which WatchSetupAsync notices.
+                    Log.Info($"Waiting for administrator approval to install the {Available.Version} update.");
+                    Message = $"Installing Driftwall {Available.Version} needs administrator approval...";
+                    Interlocked.Exchange(ref _setupPending, 1);
+                    _ = WatchSetupAsync(setup, Available.Version);
+                    return true;
+                }
             }
             else
             {
-                // A portable copy: a small script waits for this process to end, swaps the file
-                // and starts the new one. cmd rather than PowerShell so it needs no policy. A batch
-                // file treats % specially, so any in a path is doubled; quotes cannot occur in
-                // Windows paths. The script removes itself on its last line.
-                var exe = ExecutablePath;
+                // A portable copy: a small script waits for this process to end, swaps the file and
+                // starts the new one, or starts the old one again if the swap fails. cmd rather than
+                // PowerShell so it needs no policy. The paths travel in environment variables, which
+                // cmd receives as UTF-16; written into the script they would be read in the console
+                // code page and garbled for a user name in Korean, say. The script removes itself.
                 var script = Path.Combine(Paths.UpdatesDirectory, "apply-update.cmd");
-                var launch = relaunchVisible ? " --show" : " --minimized";
-                string B(string s) => s.Replace("%", "%%");
                 File.WriteAllText(script, string.Join("\r\n", new[]
                 {
                     "@echo off",
                     ":wait",
-                    $"tasklist /FI \"PID eq {Environment.ProcessId}\" 2>nul | find \" {Environment.ProcessId} \" >nul",
+                    "tasklist /FI \"PID eq %DW_PID%\" 2>nul | find \" %DW_PID% \" >nul",
                     "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)",
-                    $"move /y \"{B(exe)}\" \"{B(exe)}.old\" >nul || exit /b 1",
-                    $"move /y \"{B(path)}\" \"{B(exe)}\" >nul || (move /y \"{B(exe)}.old\" \"{B(exe)}\" >nul & exit /b 1)",
-                    $"start \"\" \"{B(exe)}\"{launch}",
-                    $"del \"{B(exe)}.old\" >nul 2>nul",
+                    "move /y \"%DW_EXE%\" \"%DW_EXE%.old\" >nul || (start \"\" \"%DW_EXE%\" %DW_ARGS% & exit /b 1)",
+                    "move /y \"%DW_NEW%\" \"%DW_EXE%\" >nul || (move /y \"%DW_EXE%.old\" \"%DW_EXE%\" >nul & start \"\" \"%DW_EXE%\" %DW_ARGS% & exit /b 1)",
+                    "start \"\" \"%DW_EXE%\" %DW_ARGS%",
+                    "del \"%DW_EXE%.old\" >nul 2>nul",
                     "(goto) 2>nul & del \"%~f0\"",
-                }) + "\r\n", Encoding.Default);
+                }) + "\r\n", Encoding.ASCII);
 
-                Process.Start(new ProcessStartInfo("cmd.exe", $"/d /c \"{script}\"")
+                // /s keeps the quotes around a script path with ( ) & ^ in it, as in "C:\Users\Max (Home)",
+                // and /v:off stops a machine-wide delayed-expansion setting from eating ! in the paths.
+                var start = new ProcessStartInfo("cmd.exe", $"/d /v:off /s /c \"\"{script}\"\"")
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WorkingDirectory = Paths.UpdatesDirectory,
-                });
+                };
+                start.Environment["DW_PID"] = Environment.ProcessId.ToString();
+                start.Environment["DW_EXE"] = ExecutablePath;
+                start.Environment["DW_NEW"] = path;
+                start.Environment["DW_ARGS"] = relaunchVisible ? "--show" : "--minimized";
+                Process.Start(start);
             }
 
             Log.Info($"Handing over to the {Available.Version} update.");
@@ -472,8 +667,49 @@ public sealed class UpdateService : IDisposable
     public async Task InstallLatestAsync(bool relaunchVisible, CancellationToken ct = default)
     {
         if (Available is null && await CheckAsync(ct).ConfigureAwait(false) is null) return;
+
+        if (!CanReplaceItself)
+        {
+            // Downloading would only end in the same refusal, so say so before fetching anything.
+            Message = $"Driftwall cannot replace itself in {Path.GetDirectoryName(ExecutablePath)}. Download {Available!.Version} from the releases page instead.";
+            return;
+        }
+
         if (!await DownloadAsync(ct).ConfigureAwait(false)) return;
         Install(relaunchVisible);
+    }
+
+    /// <summary>
+    /// Follows a setup that is waiting for administrator approval. Approved, it stops this process
+    /// before it finishes; refused, it ends with a failure code and the update is back to waiting.
+    /// </summary>
+    private async Task WatchSetupAsync(Process? setup, Version version)
+    {
+        int? exitCode = null;
+        try
+        {
+            if (setup is null) return;
+            using (setup)
+            {
+                await setup.WaitForExitAsync().ConfigureAwait(false);
+                exitCode = setup.ExitCode;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not follow the update setup.", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _setupPending, 0);
+        }
+
+        if (exitCode == 0) return;
+
+        // Refused approval and a failed install look the same from here; the code is what tells them apart.
+        Log.Warn($"The {version} update setup ended with exit code {exitCode?.ToString() ?? "unknown"}.");
+        State = UpdateState.Ready;
+        Message = $"Driftwall {version} was not installed. Installing it for all users needs administrator approval; if it was given, see the log.";
     }
 
     // ---------------- the daily pass ----------------
@@ -481,6 +717,9 @@ public sealed class UpdateService : IDisposable
     private async Task AutoCheckAsync()
     {
         if (_disposed) return;
+
+        // Never overlap with a check, download or setup already under way, the user's or an earlier pass's.
+        if (State is UpdateState.Installing or UpdateState.Checking or UpdateState.Downloading) return;
 
         try
         {
@@ -490,8 +729,10 @@ public sealed class UpdateService : IDisposable
             var info = State == UpdateState.Ready ? Available : await CheckAsync().ConfigureAwait(false);
             if (info is null) return;
 
-            if (!settings.AutoUpdate)
+            if (!settings.AutoUpdate || !CanInstallUnattended)
             {
+                // An all-users install needs administrator approval, and a portable copy in a folder
+                // it cannot write to cannot swap itself. Say a version is waiting; Settings installs it.
                 TellOnce(info);
                 return;
             }
@@ -524,7 +765,7 @@ public sealed class UpdateService : IDisposable
     /// <summary>Called by the app when the window goes away: the moment a waiting update may go in.</summary>
     public void OnWindowHidden()
     {
-        if (State != UpdateState.Ready || !_settings.Settings.AutoUpdate) return;
+        if (State != UpdateState.Ready || !_settings.Settings.AutoUpdate || !CanInstallUnattended) return;
         if (SystemConditions.IsFullscreenAppRunning()) return;
         Install(relaunchVisible: false);
     }
@@ -575,13 +816,6 @@ public sealed class UpdateService : IDisposable
         catch (Exception ex) { Log.Warn("Could not delete " + path, ex); }
     }
 
-    private static bool IsUnder(string path, string root)
-    {
-        if (string.IsNullOrEmpty(root)) return false;
-        var full = Path.GetFullPath(path).TrimEnd('\\') + "\\";
-        var rootFull = Path.GetFullPath(root).TrimEnd('\\') + "\\";
-        return full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase);
-    }
 
     public void Dispose()
     {

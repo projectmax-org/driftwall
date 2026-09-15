@@ -58,8 +58,8 @@ The resource behaviour was the design constraint, not an afterthought:
   power and metered connections too.
 - **Bounded memory.** The browse grid virtualises: tiles load their thumbnail when they scroll into
   view and release it when they scroll out, so memory tracks the viewport, not the scroll history.
-- **Decodes only what it needs.** A 45-megapixel photo destined for a 1080p monitor is decoded at
-  about 2 megapixels. Full-size decoding never happens.
+- **Decodes only what it needs.** With Fill, Fit or Stretch, a 45-megapixel photo destined for a
+  1080p monitor is decoded at about 2 megapixels, never at full size.
 - **Gives memory back.** Closing the window compacts the large object heap and returns the working
   set to Windows.
 - **No GPU use.** Composition runs on WPF's software rasteriser on a dedicated below-normal-priority
@@ -125,7 +125,11 @@ new version is downloaded, checked against the SHA-256 sums published with the r
 installed while the window is closed and no fullscreen app is running; the app comes back on its
 own. With it off, a notification says a version is waiting and Settings → Updates installs it on
 request. An installed copy updates by running the setup wizard silently; a portable copy is swapped
-in place. If the running copy is signed, a download signed by anyone else is refused.
+in place. A copy installed for all users is never updated unasked: replacing it needs administrator
+approval, so it only says a version is waiting and Settings installs it, with the approval prompt. A
+portable copy in a folder it cannot write to cannot replace itself at all, and says to download the
+new version instead. If the running copy is signed, a download is refused unless Windows verifies its
+signature and it comes from the same publisher.
 
 ### The "Unknown publisher" warning
 
@@ -232,6 +236,12 @@ The pieces that are worth knowing about:
 - **`IDesktopWallpaper`** (COM, Windows 8+) is what makes per-monitor wallpaper work. The app renders
   a file matching each monitor's exact pixel size and hands it over, so Windows never rescales it —
   the desktop's own "Fill" is a low-quality stretch, and avoiding it is most of why this looks sharp.
+- **`ImageComposer`** resamples each photo once, with Lanczos-3 (`Resampler`), straight to the pixels
+  it will occupy, and saves the result as PNG. Windows re-encodes JPEG wallpapers at quality 85 before
+  showing them but passes PNG pixels through untouched; the self-test checks that pixel for pixel.
+- **Photos that are too small are skipped before they go up.** What a source reports is only a
+  promise, so the downloaded file is measured against every display it will cover, and a photo that
+  would be enlarged past the minimum-resolution setting is passed over for the next one.
 - **`RotationService`** keeps a look-ahead queue filled from every enabled source in weighted
   rotation, and prefetches the next few photos, so pressing Next is instant.
 - **`RenderThread`** is a single dedicated STA thread that owns all WPF imaging. Doing image work on

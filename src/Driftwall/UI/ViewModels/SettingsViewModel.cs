@@ -373,20 +373,6 @@ public sealed class SettingsViewModel : ViewModelBase
     // Fitting, letterboxing and multi-display placement are edited on the Displays tab, next to the
     // layout map, so they are deliberately not repeated here.
 
-    public int OutputQuality
-    {
-        get => S.OutputQuality;
-        set { _services.Settings.Update(s => s.OutputQuality = Math.Clamp(value, 60, 100)); Raise(nameof(OutputQuality), nameof(OutputQualityLabel)); }
-    }
-
-    public string OutputQualityLabel => OutputQuality switch
-    {
-        >= 96 => "Maximum — largest files",
-        >= 88 => "High — recommended",
-        >= 78 => "Balanced",
-        _ => "Small files",
-    };
-
     public bool RejectLowResolution
     {
         get => S.RejectLowResolution;
@@ -399,7 +385,7 @@ public sealed class SettingsViewModel : ViewModelBase
         set { _services.Settings.Update(s => s.MinResolutionRatio = Math.Clamp(value, 0.1, 2.0)); Raise(nameof(MinResolutionRatio), nameof(MinResolutionLabel)); }
     }
 
-    public string MinResolutionLabel => $"At least {MinResolutionRatio * 100:0}% of your screen's width";
+    public string MinResolutionLabel => $"At least {MinResolutionRatio * 100:0}% of each display's width and height";
 
     // ---------------- behaviour ----------------
 

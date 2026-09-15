@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly AppServices _services;
     private readonly MainViewModel _viewModel;
     private bool _reallyClosing;
+    private bool _closing;
 
     public MainWindow(AppServices services, MainViewModel viewModel)
     {
@@ -38,7 +39,10 @@ public partial class MainWindow : Window
     public void CloseForReal()
     {
         _reallyClosing = true;
-        Close();
+
+        // Close() throws while the window is already closing, which is how quitting starts when
+        // there is no tray icon to go back to.
+        if (!_closing) Close();
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -74,7 +78,8 @@ public partial class MainWindow : Window
     {
         switch (e.Key)
         {
-            case Key.Escape when _services.Settings.Settings.CloseToTray:
+            // Without a tray icon there would be nothing to bring the window back with.
+            case Key.Escape when _services.Settings.Settings.CloseToTray && _services.Settings.Settings.ShowTrayIcon:
                 if (EscapeBelongsToFocusedControl()) break;
                 HideToTray();
                 e.Handled = true;
@@ -129,8 +134,13 @@ public partial class MainWindow : Window
     /// <summary>Hides the window and leaves the app running in the notification area.</summary>
     private void HideToTray()
     {
+        if (_reallyClosing) return;
+
         Log.Info("Window closed to the notification area.");
         Hide();
+
+        // Hiding can start a waiting update, which quits the app; there is no one to show a hint to then.
+        if (_reallyClosing) return;
         ShowTrayHintOnce();
     }
 
@@ -171,11 +181,15 @@ public partial class MainWindow : Window
         if (!_reallyClosing && _services.Settings.Settings.CloseToTray && _services.Settings.Settings.ShowTrayIcon)
         {
             e.Cancel = true;
-            HideToTray();
+
+            // Hidden once this close has been cancelled and finished: hiding can start a waiting update
+            // that quits the app, and quitting has to close the window, which WPF refuses mid-close.
+            Dispatcher.BeginInvoke(new Action(HideToTray));
             return;
         }
 
         base.OnClosing(e);
+        _closing = !e.Cancel;
 
         // With no tray icon there is nothing left to interact with, so closing means quitting.
         if (!_reallyClosing && !_services.Settings.Settings.ShowTrayIcon)

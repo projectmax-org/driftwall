@@ -50,13 +50,36 @@ public partial class App : Application
         }
 
         ThemeManager.Apply(_services.Settings.Settings);
-        StartupManager.RepairIfNeeded();
+        // The first run applies the "start with Windows" default to a portable copy. A copy the setup
+        // wizard or tools\install-local.ps1 put in place follows the choice made there instead, which
+        // the user may have unticked. From then on the Run key belongs to the user (and Task Manager's
+        // Startup tab). This runs before the repair below, which would otherwise adopt a stale entry.
+        if (!_services.Settings.Settings.HasCompletedFirstRun)
+        {
+            bool byWizard = UpdateService.IsInstalled;
+            bool byScript = !byWizard && File.Exists(Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? string.Empty, "uninstall.ps1"));
 
-        // The first run applies the "start with Windows" default; the installer usually has done
-        // it already, and a portable copy gets the same treatment because that is what the setting
-        // says. From then on the Run key belongs to the user (and Task Manager's Startup tab).
-        if (!_services.Settings.Settings.HasCompletedFirstRun && _services.Settings.Settings.StartWithWindows && !StartupManager.IsEnabled())
-            StartupManager.SetEnabled(true);
+            if (byWizard || byScript)
+            {
+                // An entry naming a program that is gone was not a choice about this copy.
+                if (StartupManager.HasStaleEntry()) StartupManager.SetEnabled(false);
+
+                bool enabled = StartupManager.IsEnabled();
+
+                // The wizard writes the entry only into the hive of whoever ran it, so another user of
+                // an all-users install gets it from the task Inno Setup recorded.
+                if (!enabled && byWizard && UpdateService.InstallerSelectedTask("startup"))
+                    enabled = StartupManager.SetEnabled(true);
+
+                _services.Settings.Update(s => s.StartWithWindows = enabled);
+            }
+            else if (_services.Settings.Settings.StartWithWindows && !StartupManager.IsEnabled())
+            {
+                StartupManager.SetEnabled(true);
+            }
+        }
+
+        StartupManager.RepairIfNeeded();
 
         _viewModel = new MainViewModel(_services);
         _window = new MainWindow(_services, _viewModel);
@@ -142,11 +165,18 @@ public partial class App : Application
 
         _services.Updates.IsWindowVisible = () => Dispatcher.Invoke(() => _window is { IsVisible: true });
         _services.Updates.ExitForUpdate = () => Dispatcher.Invoke(ExitApplication);
+        _services.Updates.SaveBeforeUpdate = () => Dispatcher.Invoke(() =>
+        {
+            _services.Settings.Save();
+            _services.Collections.Save();
+        });
         _services.Updates.NotifyAvailable = info => _services.Tray.ShowBalloon(
             $"Driftwall {info.Version} is available",
-            _services.Settings.Settings.AutoUpdate
-                ? "It will be installed the next time the window is closed. Click to see what is new."
-                : "Click to open Settings and install it.");
+            !UpdateService.CanReplaceItself
+                ? "This copy cannot replace itself where it is. Download the new version from the releases page."
+                : _services.Settings.Settings.AutoUpdate && UpdateService.CanInstallUnattended
+                    ? "It will be installed the next time the window is closed. Click to see what is new."
+                    : "Click to open Settings and install it.");
     }
 
     /// <summary>A waiting update goes in the moment the window is out of the way.</summary>
@@ -154,7 +184,8 @@ public partial class App : Application
     {
         window.IsVisibleChanged += (_, e) =>
         {
-            if (e.NewValue is false) _services?.Updates.OnWindowHidden();
+            // Quitting hides the window too, and that must not install an update and bring the app back.
+            if (e.NewValue is false && !_exiting) _services?.Updates.OnWindowHidden();
         };
     }
 
@@ -191,21 +222,21 @@ public partial class App : Application
 
         Log.Info("Driftwall shutting down.");
 
-        try
-        {
-            _viewModel?.Dispose();
-            _window?.CloseForReal();
-            _services?.Settings.Save();
-            _services?.Collections.Save();
-            _services?.Dispose();
-            _instance?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            Log.Warn("Error during shutdown.", ex);
-        }
+        // Each step on its own: a window that fails to close must not cost the user their settings.
+        Attempt(() => _viewModel?.Dispose());
+        Attempt(() => _window?.CloseForReal());
+        Attempt(() => _services?.Settings.Save());
+        Attempt(() => _services?.Collections.Save());
+        Attempt(() => _services?.Dispose());
+        Attempt(() => _instance?.Dispose());
 
         Shutdown();
+    }
+
+    private static void Attempt(Action step)
+    {
+        try { step(); }
+        catch (Exception ex) { Log.Warn("Error during shutdown.", ex); }
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

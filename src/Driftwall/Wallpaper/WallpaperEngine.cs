@@ -31,7 +31,14 @@ public sealed class WallpaperEngine
     private IReadOnlyList<MonitorInfo>? _monitors;
     private long _renderSequence;
 
-    public WallpaperEngine(ImageCache cache) => _cache = cache;
+    public WallpaperEngine(ImageCache cache)
+    {
+        _cache = cache;
+
+        // Carry on from the highest render number on disk. Starting again at 1 would reuse a path that
+        // may still be on screen from the last run, and Windows can ignore a change to the same path.
+        _renderSequence = HighestRenderSequence();
+    }
 
     /// <summary>The most recent successful application, or null if nothing has been set this session.</summary>
     public WallpaperApplication? Current { get; private set; }
@@ -124,8 +131,7 @@ public sealed class WallpaperEngine
 
             bool composed = await ImageComposer.ComposeAsync(
                 sourcePath, outputPath, monitor.Width, monitor.Height,
-                scaling, settings.LetterboxStyle, ParseColor(settings.LetterboxColor),
-                settings.OutputQuality, ct).ConfigureAwait(false);
+                scaling, settings.LetterboxStyle, ParseColor(settings.LetterboxColor), ct).ConfigureAwait(false);
 
             if (!composed) continue;
 
@@ -134,6 +140,8 @@ public sealed class WallpaperEngine
 
         if (assignments.Count == 0) return null;
 
+        // A cancelled change never reaches the desktop, even when every render finished.
+        ct.ThrowIfCancellationRequested();
         SetWallpaperFiles(assignments);
         NotifyProviders(assignments);
         return new WallpaperApplication(assignments, DateTimeOffset.Now);
@@ -155,12 +163,12 @@ public sealed class WallpaperEngine
         // displays have different DPI, which is where the built-in span visibly misaligns.
         bool composed = await ImageComposer.ComposeSpanAsync(
             sourcePath, monitors, m => paths[m.Id],
-            settings.Scaling, settings.LetterboxStyle, ParseColor(settings.LetterboxColor),
-            settings.OutputQuality, ct).ConfigureAwait(false);
+            settings.Scaling, settings.LetterboxStyle, ParseColor(settings.LetterboxColor), ct).ConfigureAwait(false);
 
         if (!composed) return null;
 
         var assignments = monitors.Select(m => new MonitorAssignment(m, photo, paths[m.Id])).ToList();
+        ct.ThrowIfCancellationRequested();
         SetWallpaperFiles(assignments);
         NotifyProviders(assignments);
         return new WallpaperApplication(assignments, DateTimeOffset.Now);
@@ -240,36 +248,128 @@ public sealed class WallpaperEngine
 
     // ---------------- helpers ----------------
 
-    private static ScalingMode ScalingFor(MonitorInfo monitor, AppSettings settings) =>
+    /// <summary>The scaling mode a monitor uses: its own override, or the global setting.</summary>
+    public static ScalingMode ScalingFor(MonitorInfo monitor, AppSettings settings) =>
         settings.Monitors.FirstOrDefault(m => string.Equals(m.MonitorId, monitor.Id, StringComparison.OrdinalIgnoreCase))
             ?.ScalingOverride ?? settings.Scaling;
 
     /// <summary>
     /// Each apply writes to a new file name. Windows caches the wallpaper by path and will sometimes
     /// ignore a change when the path is unchanged, so reusing one name makes rotation look broken.
+    /// <para>
+    /// The process id keeps two processes apart (the app and the self-test can run at once), and the
+    /// sequence, seeded from disk, keeps one process from reusing a path from an earlier run.
+    /// </para>
     /// </summary>
     private static string RenderPath(MonitorInfo monitor, long sequence) =>
-        Path.Combine(Paths.RenderDirectory, $"m{monitor.Index}-{sequence}.jpg");
+        Path.Combine(Paths.RenderDirectory, $"m{monitor.Index}-{Environment.ProcessId}-{sequence}{ImageComposer.OutputExtension}");
 
-    private static void CleanupRenderDirectory(int monitorCount)
+    private void CleanupRenderDirectory(int monitorCount)
     {
         try
         {
-            var files = new DirectoryInfo(Paths.RenderDirectory).GetFiles("*.jpg");
+            var inUse = WallpapersInUse();
+            var directory = new DirectoryInfo(Paths.RenderDirectory);
+            var files = directory.GetFiles("*" + ImageComposer.OutputExtension);
             int keep = Math.Max(monitorCount * 2, 4);
-            if (files.Length <= keep) return;
 
             foreach (var file in files.OrderByDescending(f => f.LastWriteTimeUtc).Skip(keep))
             {
                 // The two most recent generations are kept: Windows may still have the previous
                 // wallpaper file open while it transitions.
+                if (inUse.Contains(file.FullName)) continue;
                 try { file.Delete(); } catch { /* it will be caught by the next sweep */ }
+            }
+
+            // Another Driftwall process can be writing here too: an older version still installed, or
+            // the self-test. Its newest files may not have reached Windows yet, so they are left alone.
+            var settled = DateTime.UtcNow - TimeSpan.FromMinutes(10);
+
+            // Versions before 1.0.2 rendered JPEG. Each goes once no display shows it any more.
+            foreach (var legacy in directory.GetFiles("*.jpg"))
+            {
+                if (inUse.Contains(legacy.FullName) || legacy.LastWriteTimeUtc > settled) continue;
+                try { legacy.Delete(); } catch { /* still open; the next sweep gets it */ }
+            }
+
+            // Half-written files from an encode that was interrupted: an exit, an update, a crash.
+            foreach (var partial in directory.GetFiles("*.tmp"))
+            {
+                if (partial.LastWriteTimeUtc > settled) continue;
+                try { partial.Delete(); } catch { /* the next sweep gets it */ }
             }
         }
         catch (Exception ex)
         {
             Log.Warn("Could not clean the render directory.", ex);
         }
+    }
+
+    /// <summary>
+    /// Every file Windows reports as a monitor's wallpaper, plus this session's latest renders. A
+    /// display this change did not render (switched off in Displays, or its photo failed) is still
+    /// showing its old file, and deleting that file could leave it blank the next time Windows reloads it.
+    /// </summary>
+    private HashSet<string> WallpapersInUse()
+    {
+        var inUse = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (Current is not null)
+        {
+            foreach (var assignment in Current.Assignments)
+                inUse.Add(Path.GetFullPath(assignment.RenderedPath));
+        }
+
+        IDesktopWallpaper? shell = null;
+        try
+        {
+            shell = (IDesktopWallpaper)new DesktopWallpaperClass();
+            foreach (var monitor in Monitors)
+            {
+                if (string.IsNullOrEmpty(monitor.Id)) continue;
+                try
+                {
+                    var path = shell.GetWallpaper(monitor.Id);
+                    if (!string.IsNullOrEmpty(path)) inUse.Add(Path.GetFullPath(path));
+                }
+                catch (Exception)
+                {
+                    // A monitor without a wallpaper of its own, or a path Windows reports oddly.
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not ask Windows which wallpapers are in use.", ex);
+        }
+        finally
+        {
+            if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
+        }
+
+        return inUse;
+    }
+
+    private static long HighestRenderSequence()
+    {
+        long highest = 0;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(Paths.RenderDirectory))
+            {
+                // Render files are named m{monitor}-{process}-{sequence}.{extension}; before 1.0.2,
+                // m{monitor}-{sequence}.jpg. Either way the sequence follows the last dash.
+                var name = Path.GetFileNameWithoutExtension(file);
+                int dash = name.LastIndexOf('-');
+                if (name.StartsWith('m') && dash > 0 && long.TryParse(name.AsSpan(dash + 1), out long sequence) && sequence > highest)
+                    highest = sequence;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not read the render directory.", ex);
+        }
+
+        return highest;
     }
 
     public static Color ParseColor(string value)
