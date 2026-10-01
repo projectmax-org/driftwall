@@ -338,6 +338,7 @@
 
                             <ComboBox Grid.Column="1" Margin="16,0,0,0"
                                       MinWidth="240" MaxWidth="320"
+                                      controls:Hint.Text="Choose a source to add"
                                       ItemsSource="{Binding AddableSources}"
                                       SelectedItem="{Binding SourceToAdd}"
                                       ItemTemplate="{StaticResource Template.DisplayNameText}"

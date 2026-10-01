@@ -131,13 +131,22 @@
                             Background="{DynamicResource Brush.Base}"
                             BorderBrush="{DynamicResource Brush.Border}"
                             BorderThickness="1"
-                            CornerRadius="{StaticResource CornerRadius.Large}">
+                            CornerRadius="{StaticResource CornerRadius.Large}"
+                            SnapsToDevicePixels="True">
                         <StackPanel>
-                            <Border CornerRadius="13,13,0,0" ClipToBounds="True" Height="112">
+                            <!-- The photo is painted as a Border background rather than placed as an
+                                 Image: a background follows the rounded corners, an Image child does
+                                 not, and its square corners would show over the curve. -->
+                            <Border Height="112" CornerRadius="13,13,0,0"
+                                    Background="{DynamicResource Brush.SurfaceAlt}">
                                 <Grid>
-                                    <Border Background="{DynamicResource Brush.SurfaceAlt}" />
-                                    <Image Source="{Binding CurrentPreview}" Stretch="UniformToFill" />
-                                    <Border Background="{StaticResource Brush.PhotoScrim}" />
+                                    <Border CornerRadius="13,13,0,0"
+                                            RenderOptions.BitmapScalingMode="HighQuality">
+                                        <Border.Background>
+                                            <ImageBrush ImageSource="{Binding CurrentPreview}" Stretch="UniformToFill" />
+                                        </Border.Background>
+                                    </Border>
+                                    <Border CornerRadius="13,13,0,0" Background="{StaticResource Brush.PhotoScrim}" />
                                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
                                                 Visibility="{Binding HasCurrentPhoto, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
                                         <TextBlock Text="Nothing set yet"
@@ -148,7 +157,7 @@
                                                    FontSize="11" Opacity="0.8"
                                                    HorizontalAlignment="Center" Margin="0,3,0,0" />
                                     </StackPanel>
-                                    <StackPanel VerticalAlignment="Bottom" Margin="11,0,11,9"
+                                    <StackPanel VerticalAlignment="Bottom" Margin="12,0,12,9"
                                                 Visibility="{Binding HasCurrentPhoto, Converter={StaticResource BoolToVisibility}}">
                                         <TextBlock Text="{Binding CurrentTitle}"
                                                    Foreground="White" FontSize="12" FontWeight="SemiBold"
@@ -160,47 +169,51 @@
                                 </Grid>
                             </Border>
 
-                            <TextBlock Text="{Binding NextChangeLabel}"
-                                       Style="{StaticResource Text.Caption}"
-                                       Margin="12,10,12,0" />
+                            <StackPanel Margin="12,10,12,12">
+                                <TextBlock Text="{Binding NextChangeLabel}"
+                                           Style="{StaticResource Text.Caption}" />
 
-                            <StackPanel Orientation="Horizontal" Margin="8,8,8,10" HorizontalAlignment="Center">
-                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
-                                        Command="{Binding PreviousCommand}" ToolTip="Previous wallpaper">
-                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Previous}" />
-                                </Button>
-                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
-                                        Command="{Binding RefreshCommand}" ToolTip="Re-render the current photo">
-                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Refresh}" />
-                                </Button>
-                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
-                                        Command="{Binding TogglePauseCommand}"
-                                        ToolTip="{Binding PauseLabel}">
-                                    <Path>
-                                        <Path.Style>
-                                            <Style TargetType="Path" BasedOn="{StaticResource Icon.Small}">
-                                                <Setter Property="Data" Value="{DynamicResource Icon.Pause}" />
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsPaused}" Value="True">
-                                                        <Setter Property="Data" Value="{DynamicResource Icon.Play}" />
-                                                        <Setter Property="Stroke" Value="{DynamicResource Brush.Accent}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Path.Style>
-                                    </Path>
-                                </Button>
-                                <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
-                                        Command="{Binding SaveCurrentCommand}" ToolTip="Save to a collection">
-                                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Heart}" />
-                                </Button>
-                                <Button Style="{StaticResource Button.Accent}" Margin="6,0,0,0"
-                                        Padding="14,0" MinHeight="32"
+                                <!-- Four equal cells keep the small buttons inside the box at any rail
+                                     width; the main action gets the full width underneath. -->
+                                <UniformGrid Columns="4" Margin="0,8,0,0">
+                                    <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                            Command="{Binding PreviousCommand}" ToolTip="Previous wallpaper">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Previous}" />
+                                    </Button>
+                                    <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                            Command="{Binding TogglePauseCommand}"
+                                            ToolTip="{Binding PauseLabel}">
+                                        <Path>
+                                            <Path.Style>
+                                                <Style TargetType="Path" BasedOn="{StaticResource Icon.Small}">
+                                                    <Setter Property="Data" Value="{DynamicResource Icon.Pause}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsPaused}" Value="True">
+                                                            <Setter Property="Data" Value="{DynamicResource Icon.Play}" />
+                                                            <Setter Property="Stroke" Value="{DynamicResource Brush.Accent}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Path.Style>
+                                        </Path>
+                                    </Button>
+                                    <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                            Command="{Binding RefreshCommand}" ToolTip="Re-render the current photo">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Refresh}" />
+                                    </Button>
+                                    <Button Style="{StaticResource Button.Icon}" Width="32" Height="32"
+                                            Command="{Binding SaveCurrentCommand}" ToolTip="Save to a collection">
+                                        <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Heart}" />
+                                    </Button>
+                                </UniformGrid>
+
+                                <Button Style="{StaticResource Button.Accent}" Margin="0,8,0,0"
+                                        HorizontalAlignment="Stretch" Padding="14,0" MinHeight="34"
                                         Command="{Binding NextCommand}" ToolTip="Next wallpaper">
                                     <StackPanel Orientation="Horizontal">
                                         <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Next}"
                                               Stroke="White" />
-                                        <TextBlock Text="Next" Margin="6,0,0,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="Next wallpaper" Margin="7,0,0,0" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
                             </StackPanel>

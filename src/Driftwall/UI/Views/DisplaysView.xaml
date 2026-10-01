@@ -44,19 +44,23 @@
                 </Border.ToolTip>
 
                 <Grid>
-                    <!-- What is on this display right now -->
-                    <Image Source="{Binding Preview}" Stretch="UniformToFill"
-                           RenderOptions.BitmapScalingMode="HighQuality" />
+                    <!-- What is on this display right now, painted as a background so it follows
+                         the rounded corners (13: the outer radius less the border). -->
+                    <Border CornerRadius="13" RenderOptions.BitmapScalingMode="HighQuality">
+                        <Border.Background>
+                            <ImageBrush ImageSource="{Binding Preview}" Stretch="UniformToFill" />
+                        </Border.Background>
+                    </Border>
 
                     <!-- Nothing rendered for it yet -->
-                    <Border Background="{DynamicResource Brush.SurfaceAlt}"
+                    <Border CornerRadius="13" Background="{DynamicResource Brush.SurfaceAlt}"
                             Visibility="{Binding Preview, Converter={StaticResource NullToVisibility}, ConverterParameter=invert}">
                         <Path Style="{StaticResource Icon.Large}" Data="{DynamicResource Icon.Monitor}"
                               Stroke="{DynamicResource Brush.TextMuted}" Opacity="0.35"
                               HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
 
-                    <Border Background="{DynamicResource Brush.PhotoScrim}" />
+                    <Border CornerRadius="13" Background="{DynamicResource Brush.PhotoScrim}" />
 
                     <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="9"
                             Background="{DynamicResource Brush.Accent}"
@@ -78,7 +82,7 @@
 
                     <!-- Hover actions for this one display -->
                     <Grid x:Name="Overlay" Opacity="0">
-                        <Border Background="#8C000000" />
+                        <Border CornerRadius="13" Background="#8C000000" />
                         <StackPanel Orientation="Horizontal"
                                     HorizontalAlignment="Center" VerticalAlignment="Center">
                             <Button Style="{StaticResource Button.Accent}"

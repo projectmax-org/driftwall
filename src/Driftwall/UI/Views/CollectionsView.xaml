@@ -126,7 +126,13 @@
                         Background="{DynamicResource Brush.Surface}"
                         BorderBrush="{DynamicResource Brush.Border}" BorderThickness="0,0,0,1">
                     <StackPanel>
-                        <Grid>
+                        <!-- Title on the left, actions on the right. When the window is too narrow
+                             for both on one line, the code-behind moves the actions underneath. -->
+                        <Grid x:Name="HeaderGrid" SizeChanged="OnHeaderSizeChanged">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -161,8 +167,8 @@
 
                             <!-- Actions. Destructive first and fenced off by a rule; the primary
                                  action sits rightmost, the same way the Browse header reads. -->
-                            <StackPanel Grid.Column="1" Orientation="Horizontal"
-                                        VerticalAlignment="Center" Margin="16,0,0,0">
+                            <WrapPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal"
+                                       VerticalAlignment="Center" Margin="16,0,0,0">
                                 <Button Style="{StaticResource Button.Danger}"
                                         Width="34" Padding="0"
                                         Command="{Binding DeleteCommand}"
@@ -171,15 +177,15 @@
                                           Stroke="{DynamicResource Brush.Danger}" />
                                 </Button>
 
-                                <Border Width="1" Margin="12,4" VerticalAlignment="Stretch"
+                                <Border Width="1" Height="26" Margin="12,4" VerticalAlignment="Center"
                                         Background="{DynamicResource Brush.Border}" />
 
-                                <Button Style="{StaticResource Button.Base}"
+                                <Button Style="{StaticResource Button.Base}" Margin="0,0,8,0"
                                         Content="Rename"
                                         Command="{Binding BeginRenameCommand}"
                                         ToolTip="Give this collection a different name" />
 
-                                <Button Style="{StaticResource Button.Base}" Margin="8,0,0,0"
+                                <Button Style="{StaticResource Button.Base}" Margin="0,0,8,0"
                                         Command="{Binding ShuffleNowCommand}"
                                         ToolTip="Set the wallpaper right now from a random photo in here">
                                     <StackPanel Orientation="Horizontal">
@@ -189,17 +195,17 @@
                                     </StackPanel>
                                 </Button>
 
-                                <Button Style="{StaticResource Button.Accent}" Margin="8,0,0,0"
+                                <Button Style="{StaticResource Button.Accent}"
                                         Command="{Binding UseAsSourceCommand}"
                                         ToolTip="Mix these photos into the rotation as one of your wallpaper sources">
                                     <StackPanel Orientation="Horizontal">
                                         <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Monitor}"
                                               Stroke="{DynamicResource Brush.TextOnAccent}" VerticalAlignment="Center" />
-                                        <TextBlock Text="Use as wallpaper source" Margin="7,0,0,0"
+                                        <TextBlock Text="Use as source" Margin="7,0,0,0"
                                                    VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
-                            </StackPanel>
+                            </WrapPanel>
                         </Grid>
 
                         <TextBlock Text="{Binding StatusMessage}"

@@ -23,6 +23,11 @@ public partial class App : Application
         _instance = SingleInstance.Acquire();
         if (!_instance.IsFirstInstance)
         {
+            // The running copy gets this launch's arguments through a file, so a shortcut such as
+            // "Driftwall.exe --section=Settings" works when the app is already in the tray too.
+            try { File.WriteAllLines(ActivationArgsFile, e.Args); }
+            catch (Exception ex) { Log.Warn("Could not pass the launch arguments to the running copy.", ex); }
+
             _instance.SignalFirstInstance();
             _instance.Dispose();
             Shutdown();
@@ -82,12 +87,17 @@ public partial class App : Application
         StartupManager.RepairIfNeeded();
 
         _viewModel = new MainViewModel(_services);
+
+        // --section=Settings opens straight onto that section: for shortcuts, and for the screenshot
+        // tooling, which cannot click a window parked off-screen.
+        if (SectionFromArgs(e.Args) is { } section) _viewModel.Section = section;
+
         _window = new MainWindow(_services, _viewModel);
         AttachWindow(_window);
 
         ConfigureTray();
         ConfigureUpdates();
-        _instance.ActivationRequested += (_, _) => Dispatcher.BeginInvoke(new Action(ShowWindow));
+        _instance.ActivationRequested += (_, _) => Dispatcher.BeginInvoke(new Action(OnActivationRequested));
         _instance.StartListening();
 
         var settings = _services.Settings.Settings;
@@ -187,6 +197,38 @@ public partial class App : Application
             // Quitting hides the window too, and that must not install an update and bring the app back.
             if (e.NewValue is false && !_exiting) _services?.Updates.OnWindowHidden();
         };
+    }
+
+    /// <summary>Where a second launch leaves its arguments for the running copy.</summary>
+    private static string ActivationArgsFile => Path.Combine(Paths.DataDirectory, "activate.args");
+
+    /// <summary>The section named by a --section= argument, when there is one and it exists.</summary>
+    private static AppSection? SectionFromArgs(IEnumerable<string> args)
+    {
+        var value = args.FirstOrDefault(a => a.StartsWith("--section=", StringComparison.OrdinalIgnoreCase))?["--section=".Length..];
+        return value is not null && Enum.TryParse(value, ignoreCase: true, out AppSection section) && Enum.IsDefined(section)
+            ? section
+            : null;
+    }
+
+    /// <summary>A second launch asked for the window: honour its --section first, then show it.</summary>
+    private void OnActivationRequested()
+    {
+        try
+        {
+            if (File.Exists(ActivationArgsFile))
+            {
+                var args = File.ReadAllLines(ActivationArgsFile);
+                File.Delete(ActivationArgsFile);
+                if (_viewModel is not null && SectionFromArgs(args) is { } section) _viewModel.Section = section;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not read the launch arguments of the second copy.", ex);
+        }
+
+        ShowWindow();
     }
 
     /// <summary>Brings the window up, creating it again if it was closed to the tray.</summary>

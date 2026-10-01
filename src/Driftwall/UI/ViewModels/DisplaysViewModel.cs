@@ -127,7 +127,7 @@ public sealed class DisplaysViewModel : ViewModelBase
     {
         _services = services;
 
-        RefreshCommand = new RelayCommand(Refresh);
+        RefreshCommand = new RelayCommand(_ => Refresh(announce: true));
         ApplyNowCommand = new AsyncRelayCommand(ApplyNowAsync);
         NextForMonitorCommand = new AsyncRelayCommand(NextForMonitorAsync);
         OpenRenderedCommand = new RelayCommand(OpenRendered);
@@ -234,7 +234,11 @@ public sealed class DisplaysViewModel : ViewModelBase
     public ICommand NextForMonitorCommand { get; }
     public ICommand OpenRenderedCommand { get; }
 
-    public void Refresh()
+    /// <summary>
+    /// Re-reads the displays. Only a scan the user asked for gets a status line: the header already
+    /// says how many displays there are, so repeating it on every visit to the page says nothing.
+    /// </summary>
+    public void Refresh(bool announce = false)
     {
         _services.Engine.InvalidateMonitors();
 
@@ -246,7 +250,7 @@ public sealed class DisplaysViewModel : ViewModelBase
 
         Raise(nameof(HasMultipleMonitors), nameof(LayoutSummary));
         UpdatePreviews();
-        StatusMessage = LayoutSummary + ".";
+        StatusMessage = announce ? $"Scanned again: {LayoutSummary.ToLowerInvariant()}." : null;
     }
 
     /// <summary>

@@ -42,7 +42,7 @@ public partial class CreditToast : Window
             ? $"{author} · {photo.ProviderName}"
             : photo.ProviderName;
 
-        Preview.Source = preview;
+        PreviewBrush.ImageSource = preview;
 
         _dismissTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = VisibleFor };
         _dismissTimer.Tick += (_, _) => BeginDismiss();

@@ -46,20 +46,21 @@
                               MaxDropDownHeight="420"
                               ToolTip="Where photos come from" />
 
-                    <!-- Mode chips -->
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
-                        <ToggleButton Style="{StaticResource Chip}" Content="Top"
+                    <!-- Mode chips. They wrap onto a second line in a narrow window rather than
+                         running under the button on the right. -->
+                    <WrapPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,12,0" VerticalAlignment="Center">
+                        <ToggleButton Style="{StaticResource Chip}" Content="Top" Margin="0,2,6,2"
                                       Visibility="{Binding SupportsTop, Converter={StaticResource BoolToVisibility}}"
                                       IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Top}" />
-                        <ToggleButton Style="{StaticResource Chip}" Content="Categories" Margin="6,0,0,0"
+                        <ToggleButton Style="{StaticResource Chip}" Content="Categories" Margin="0,2,6,2"
                                       Visibility="{Binding SupportsCategories, Converter={StaticResource BoolToVisibility}}"
                                       IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Category}" />
-                        <ToggleButton Style="{StaticResource Chip}" Content="Search" Margin="6,0,0,0"
+                        <ToggleButton Style="{StaticResource Chip}" Content="Search" Margin="0,2,6,2"
                                       Visibility="{Binding SupportsSearch, Converter={StaticResource BoolToVisibility}}"
                                       IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Search}" />
-                        <ToggleButton Style="{StaticResource Chip}" Content="Random" Margin="6,0,0,0"
+                        <ToggleButton Style="{StaticResource Chip}" Content="Random" Margin="0,2,6,2"
                                       IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Random}" />
-                    </StackPanel>
+                    </WrapPanel>
 
                     <Button Grid.Column="2" Style="{StaticResource Button.Base}"
                             Command="{Binding AddAsWallpaperSourceCommand}"

@@ -18,12 +18,16 @@
         </Border.RenderTransform>
 
         <Grid>
-            <!-- Photo -->
-            <Image Source="{Binding Thumbnail}" Stretch="UniformToFill"
-                   RenderOptions.BitmapScalingMode="HighQuality" />
+            <!-- Photo, painted as a background so it follows the rounded corners; an Image child
+                 would show square corners over the curve. 13 is the outer radius less the border. -->
+            <Border CornerRadius="13" RenderOptions.BitmapScalingMode="HighQuality">
+                <Border.Background>
+                    <ImageBrush ImageSource="{Binding Thumbnail}" Stretch="UniformToFill" />
+                </Border.Background>
+            </Border>
 
             <!-- Placeholder while the thumbnail downloads -->
-            <Border Background="{DynamicResource Brush.SurfaceAlt}"
+            <Border CornerRadius="13" Background="{DynamicResource Brush.SurfaceAlt}"
                     Visibility="{Binding Thumbnail, Converter={StaticResource NullToVisibility}, ConverterParameter=invert}">
                 <Path Style="{StaticResource Icon.Large}"
                       Data="{DynamicResource Icon.Browse}"
@@ -46,7 +50,7 @@
 
             <!-- Hover overlay -->
             <Grid x:Name="Overlay" Opacity="0">
-                <Border Background="{StaticResource Brush.PhotoScrim}" />
+                <Border CornerRadius="13" Background="{StaticResource Brush.PhotoScrim}" />
 
                 <StackPanel VerticalAlignment="Bottom" Margin="11,0,11,10">
                     <TextBlock Text="{Binding Title}"

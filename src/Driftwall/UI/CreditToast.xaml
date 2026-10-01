@@ -36,13 +36,16 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
+            <!-- The photo is the Border's background so it follows the rounded corners; an Image
+                 child would show square corners over the curve. -->
             <Border Grid.Column="0" Width="74" Height="60"
-                    CornerRadius="13,0,0,13" ClipToBounds="True">
-                <Grid>
-                    <Border Background="{DynamicResource Brush.SurfaceAlt}" />
-                    <Image x:Name="Preview" Stretch="UniformToFill"
-                           RenderOptions.BitmapScalingMode="HighQuality" />
-                </Grid>
+                    CornerRadius="13,0,0,13"
+                    Background="{DynamicResource Brush.SurfaceAlt}">
+                <Border CornerRadius="13,0,0,13" RenderOptions.BitmapScalingMode="HighQuality">
+                    <Border.Background>
+                        <ImageBrush x:Name="PreviewBrush" Stretch="UniformToFill" />
+                    </Border.Background>
+                </Border>
             </Border>
 
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="13,0,15,0">
