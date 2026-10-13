@@ -37,7 +37,7 @@ public sealed class AppState
         {
             var json = JsonSerializer.Serialize(this, DriftwallJson.Options);
             var temp = Paths.StateFile + ".tmp";
-            File.WriteAllText(temp, json);
+            DriftwallJson.WriteDurably(temp, json);
 
             if (File.Exists(Paths.StateFile)) File.Replace(temp, Paths.StateFile, null);
             else File.Move(temp, Paths.StateFile);

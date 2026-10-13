@@ -35,13 +35,16 @@ public sealed class CollectionsViewModel : ViewModelBase
         OpenSourcePageCommand = new RelayCommand(OpenSourcePage);
         ShuffleNowCommand = new AsyncRelayCommand(ShuffleNowAsync, () => _selected is { Count: > 0 });
 
-        services.Collections.CollectionsChanged += (_, _) => RefreshTiles();
+        services.Collections.CollectionsChanged += (_, _) => SyncTiles();
         RefreshTiles();
     }
 
     public ObservableCollection<PhotoCollection> Collections => _services.Collections.Collections;
 
-    /// <summary>Tiles for the selected collection. Rebuilt whenever the selection or contents change.</summary>
+    /// <summary>
+    /// Tiles for the selected collection. Rebuilt when the selection changes, and kept in step with
+    /// the store when the contents do.
+    /// </summary>
     public ObservableCollection<PhotoTileViewModel> Photos { get; } = new();
 
     public PhotoCollection? Selected
@@ -120,6 +123,49 @@ public sealed class CollectionsViewModel : ViewModelBase
         RaiseCommandStates();
     }
 
+    /// <summary>
+    /// Brings the tiles in line with the store after any change to it. Every heart, rename and
+    /// finished download lands here, so the tiles still in the collection are kept, with their
+    /// thumbnails, rather than the whole grid going blank and loading again for one photo.
+    /// </summary>
+    private void SyncTiles()
+    {
+        IReadOnlyList<PhotoItem> photos = _selected is null
+            ? Array.Empty<PhotoItem>()
+            : _services.Collections.PhotosIn(_selected.Id);
+
+        // A tile is kept only while its photo is still here and still points at the same file. Once
+        // the permanent copy is saved, the store hands the photo back pointing at that copy.
+        var current = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var photo in photos) current[photo.Key] = photo.LocalPath;
+
+        for (int i = Photos.Count - 1; i >= 0; i--)
+        {
+            var tile = Photos[i];
+            if (current.TryGetValue(tile.Photo.Key, out var localPath) && localPath == tile.Photo.LocalPath) continue;
+
+            tile.Release();
+            Photos.RemoveAt(i);
+        }
+
+        // What is left is in the store's order, so a photo that does not match its place is new.
+        for (int i = 0; i < photos.Count; i++)
+        {
+            if (i < Photos.Count && Photos[i].Photo.Key == photos[i].Key) continue;
+            Photos.Insert(i, new PhotoTileViewModel(photos[i], _services.Cache, _services.Collections));
+        }
+
+        // Only reachable if the order ever differed; the first photos.Count tiles now match exactly.
+        for (int i = Photos.Count - 1; i >= photos.Count; i--)
+        {
+            Photos[i].Release();
+            Photos.RemoveAt(i);
+        }
+
+        Raise(nameof(IsEmpty), nameof(SelectedSummary));
+        RaiseCommandStates();
+    }
+
     private void RaiseCommandStates()
     {
         (DeleteCommand as RelayCommand)?.RaiseCanExecuteChanged();
@@ -157,17 +203,10 @@ public sealed class CollectionsViewModel : ViewModelBase
     {
         if (_selected is not null && !string.IsNullOrWhiteSpace(RenameText))
         {
+            // The collection announces its new name, so every list showing it, Browse's "Saving to"
+            // box among them, redraws it in place and keeps its selection.
             _services.Collections.Rename(_selected.Id, RenameText);
-
-            // The list binds to the collection objects themselves, so nudge it to redraw the name.
-            int index = Collections.IndexOf(_selected);
-            if (index >= 0)
-            {
-                var current = _selected;
-                Collections.RemoveAt(index);
-                Collections.Insert(index, current);
-                Selected = current;
-            }
+            OnPropertyChanged(nameof(Selected));
         }
 
         IsRenaming = false;
@@ -180,10 +219,13 @@ public sealed class CollectionsViewModel : ViewModelBase
 
         _services.Settings.Update(settings =>
         {
+            // The source follows its category first, the way CollectionSource reads it, so a source
+            // whose picker has since moved to another collection does not count.
             bool exists = settings.Sources.Any(s =>
                 s.ProviderId == "collection" &&
-                s.Options.TryGetValue(CollectionSource.CollectionIdOption, out var id) &&
-                id == _selected.Id);
+                (!string.IsNullOrWhiteSpace(s.Category)
+                    ? s.Category
+                    : s.Options.GetValueOrDefault(CollectionSource.CollectionIdOption)) == _selected.Id);
 
             if (exists) return;
 

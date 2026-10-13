@@ -183,7 +183,9 @@ public sealed class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             case System.Collections.Specialized.NotifyCollectionChangedAction.Remove:
             case System.Collections.Specialized.NotifyCollectionChangedAction.Replace:
             case System.Collections.Specialized.NotifyCollectionChangedAction.Move:
-                RemoveInternalChildRange(args.Position.Index, args.ItemUICount);
+                // A tile that was never realised has no container to take out, and when nothing before
+                // it is realised either its position is -1, which the child list would throw on.
+                if (args.ItemUICount > 0) RemoveInternalChildRange(args.Position.Index, args.ItemUICount);
                 break;
 
             case System.Collections.Specialized.NotifyCollectionChangedAction.Reset:

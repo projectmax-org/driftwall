@@ -20,7 +20,19 @@ public partial class App : Application
         base.OnStartup(e);
 
         // A second launch should surface the running copy rather than start a rival tray icon.
-        _instance = SingleInstance.Acquire();
+        try
+        {
+            _instance = SingleInstance.Acquire();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            // A copy running with other rights made names this launch may not open: an older version
+            // run as administrator, say. That copy is still running, so this launch simply ends.
+            Log.Warn("Another Driftwall is running with different rights; this launch ends here.", ex);
+            Shutdown();
+            return;
+        }
+
         if (!_instance.IsFirstInstance)
         {
             // The running copy gets this launch's arguments through a file, so a shortcut such as
@@ -73,12 +85,13 @@ public partial class App : Application
 
                 // The wizard writes the entry only into the hive of whoever ran it, so another user of
                 // an all-users install gets it from the task Inno Setup recorded.
-                if (!enabled && byWizard && UpdateService.InstallerSelectedTask("startup"))
+                // Only when there is no entry: one switched off in Task Manager stays off.
+                if (!StartupManager.HasEntry() && byWizard && UpdateService.InstallerSelectedTask("startup"))
                     enabled = StartupManager.SetEnabled(true);
 
                 _services.Settings.Update(s => s.StartWithWindows = enabled);
             }
-            else if (_services.Settings.Settings.StartWithWindows && !StartupManager.IsEnabled())
+            else if (_services.Settings.Settings.StartWithWindows && !StartupManager.HasEntry())
             {
                 StartupManager.SetEnabled(true);
             }
@@ -92,9 +105,8 @@ public partial class App : Application
         // tooling, which cannot click a window parked off-screen.
         if (SectionFromArgs(e.Args) is { } section) _viewModel.Section = section;
 
-        _window = new MainWindow(_services, _viewModel);
-        AttachWindow(_window);
-
+        // No window yet: ShowWindow builds it when it is first wanted. One built here and never shown
+        // would only be replaced, yet WPF would keep it, and close it at quit after the services had gone.
         ConfigureTray();
         ConfigureUpdates();
         _instance.ActivationRequested += (_, _) => Dispatcher.BeginInvoke(new Action(OnActivationRequested));
@@ -195,7 +207,8 @@ public partial class App : Application
         window.IsVisibleChanged += (_, e) =>
         {
             // Quitting hides the window too, and that must not install an update and bring the app back.
-            if (e.NewValue is false && !_exiting) _services?.Updates.OnWindowHidden();
+            // Nor must the close WPF makes as the session ends: setup would be cut off with everything else.
+            if (e.NewValue is false && !_exiting && !_sessionEnding) _services?.Updates.OnWindowHidden();
         };
     }
 
@@ -231,7 +244,7 @@ public partial class App : Application
         ShowWindow();
     }
 
-    /// <summary>Brings the window up, creating it again if it was closed to the tray.</summary>
+    /// <summary>Brings the window up, creating it when there is none yet or the last one was closed.</summary>
     public void ShowWindow()
     {
         if (_services is null || _viewModel is null) return;
@@ -254,8 +267,12 @@ public partial class App : Application
     }
 
     private bool _exiting;
+    private bool _sessionEnding;
 
-    /// <summary>The only path that actually ends the process.</summary>
+    /// <summary>
+    /// How the app ends itself. Windows ending the session is the one other way out, and it goes
+    /// through WPF's own shutdown instead; see <see cref="OnSessionEnding"/>.
+    /// </summary>
     public void ExitApplication()
     {
         // Quitting hides the window, and a waiting update may take that as its cue; one exit is enough.
@@ -273,6 +290,39 @@ public partial class App : Application
         Attempt(() => _instance?.Dispose());
 
         Shutdown();
+    }
+
+    /// <summary>
+    /// Sign-out, restart and shutdown. WPF answers Windows by shutting the app down itself, so
+    /// ExitApplication never runs, and the process can be ended before the delayed saves fire: a
+    /// photo saved a second earlier would be gone at the next sign-in. Both stores are written now,
+    /// while the process is sure to be alive. Nothing is disposed here: the scheduler may still have
+    /// its own session-ending work to do, the shutdown wallpaper change.
+    /// </summary>
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        base.OnSessionEnding(e);
+        if (e.Cancel) return;
+
+        // WPF closes the windows next, and a hidden window is a waiting update's cue to install.
+        _sessionEnding = true;
+
+        Log.Info("Session ending; saving settings and collections.");
+        Attempt(() => _services?.Settings.Save());
+        Attempt(() => _services?.Collections.Save());
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        // After a session end WPF has closed the window by now, and the size it records on closing
+        // would otherwise wait on a delayed save. ExitApplication has saved everything already.
+        if (!_exiting)
+        {
+            Attempt(() => _services?.Settings.Save());
+            Attempt(() => _services?.Collections.Save());
+        }
+
+        base.OnExit(e);
     }
 
     private static void Attempt(Action step)

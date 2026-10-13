@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.RegularExpressions;
 using System.Windows.Input;
 using Driftwall.Core;
 using Driftwall.Scheduling;
@@ -7,7 +8,7 @@ using Driftwall.Sources;
 namespace Driftwall.UI.ViewModels;
 
 /// <summary>One configured wallpaper source, edited in place.</summary>
-public sealed class ConfiguredSourceViewModel : ViewModelBase
+public sealed partial class ConfiguredSourceViewModel : ViewModelBase
 {
     private readonly SettingsStore _settings;
     private readonly Action _onChanged;
@@ -19,6 +20,35 @@ public sealed class ConfiguredSourceViewModel : ViewModelBase
         _settings = settings;
         _onChanged = onChanged;
         OpenApiKeyHelpCommand = new RelayCommand(() => Shell.OpenUrl(ApiKeyHelpUrl));
+
+        // A stored range the source does not offer (Bing's default "month", for one) would leave the
+        // ComboBox blank. A supported one is stored in its place rather than only shown, so the range
+        // on screen is the range the source is asked for.
+        var ranges = source.SupportedTimeRanges;
+        if (ranges.Count > 0 && !ranges.Contains(selection.TimeRange, StringComparer.OrdinalIgnoreCase))
+        {
+            selection.TimeRange = ClosestRange(selection.TimeRange, ranges);
+            settings.Touch();
+        }
+    }
+
+    private static readonly string[] RangeOrder = ["day", "week", "month", "year", "all"];
+
+    /// <summary>
+    /// The shortest offered range that still covers <paramref name="stored"/>, so nothing the source
+    /// fetched before drops out: Bing reads "month" as everything, and "all" is what keeps that.
+    /// </summary>
+    private static string ClosestRange(string? stored, IReadOnlyList<string> offered)
+    {
+        int rank = Array.IndexOf(RangeOrder, stored?.ToLowerInvariant());
+        if (rank < 0) return offered[Math.Min(1, offered.Count - 1)];
+
+        return offered
+            .Select(range => (Range: range, Rank: Array.IndexOf(RangeOrder, range.ToLowerInvariant())))
+            .Where(r => r.Rank >= 0)
+            .OrderBy(r => r.Rank < rank ? int.MaxValue - r.Rank : r.Rank)
+            .Select(r => r.Range)
+            .FirstOrDefault() ?? offered[Math.Min(1, offered.Count - 1)];
     }
 
     public SourceSelection Selection { get; }
@@ -120,17 +150,8 @@ public sealed class ConfiguredSourceViewModel : ViewModelBase
 
     public string TimeRange
     {
-        get
-        {
-            // A stored range the source no longer offers would leave the ComboBox blank; fall back
-            // to something it does support.
-            var supported = Source.SupportedTimeRanges;
-            if (supported.Count == 0) return Selection.TimeRange;
-
-            return supported.Contains(Selection.TimeRange, StringComparer.OrdinalIgnoreCase)
-                ? Selection.TimeRange
-                : supported[Math.Min(1, supported.Count - 1)];
-        }
+        // The constructor has already replaced a range the source does not offer.
+        get => Selection.TimeRange;
         set
         {
             if (value is null || Selection.TimeRange == value) return;
@@ -180,7 +201,10 @@ public sealed class ConfiguredSourceViewModel : ViewModelBase
     /// <summary>Feed URLs for the RSS source, one per line.</summary>
     public string FeedList
     {
-        get => Selection.Options.GetValueOrDefault("feeds", string.Empty).Replace(",", Environment.NewLine);
+        // A hand-edited list may be comma-separated. Only a comma with another URL after it starts a
+        // new line, the same rule the RSS source reads the list by: feed query strings use commas
+        // too (Flickr's tags=, for one), and splitting there would save a broken URL on the next edit.
+        get => FeedCommaRegex().Replace(Selection.Options.GetValueOrDefault("feeds", string.Empty), Environment.NewLine);
         set
         {
             var joined = string.Join('\n', (value ?? string.Empty)
@@ -201,6 +225,9 @@ public sealed class ConfiguredSourceViewModel : ViewModelBase
         _onChanged();
         OnPropertyChanged(string.Empty);
     }
+
+    [GeneratedRegex(@",\s*(?=https?://)", RegexOptions.CultureInvariant)]
+    private static partial Regex FeedCommaRegex();
 }
 
 /// <summary>An API key field for one provider.</summary>
@@ -695,6 +722,20 @@ public sealed class SettingsViewModel : ViewModelBase
 
     /// <summary>Called when rotation is paused or resumed from the header or the tray menu.</summary>
     public void OnPauseChangedExternally() => OnPropertyChanged(nameof(RotationEnabled));
+
+    /// <summary>
+    /// Called when the Settings page comes into view. Browse and Collections add sources of their
+    /// own, and those must be listed here to be switched off, weighted or removed.
+    /// </summary>
+    public void RefreshSources()
+    {
+        // Only when the list really changed: the page stays alive while hidden, and rebuilding it
+        // would throw away an edit still sitting in one of its text boxes.
+        var listed = S.Sources.Where(selection => _services.Sources.Find(selection.ProviderId) is not null);
+        if (Sources.Select(item => item.Selection).SequenceEqual(listed)) return;
+
+        RebuildSources();
+    }
 
     /// <summary>Called when the Settings page comes into view, so "last checked" reads right.</summary>
     public void RefreshUpdateStatus() =>

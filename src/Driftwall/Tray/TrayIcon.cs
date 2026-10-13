@@ -26,6 +26,8 @@ public sealed class TrayIcon : IDisposable
     private IntPtr _icon;
     private IntPtr _balloonIcon;
     private bool _added;
+    // Whether the icon is meant to be there, which _added cannot say once Explorer has dropped it.
+    private bool _wanted;
     private bool _disposed;
     private string _tooltip = "Driftwall";
 
@@ -52,7 +54,9 @@ public sealed class TrayIcon : IDisposable
 
     public void Show()
     {
-        if (_disposed || _added || _window is null) return;
+        if (_disposed || _window is null) return;
+        _wanted = true;
+        if (_added) return;
 
         var data = BuildData(NativeConstants.NIF_MESSAGE | NativeConstants.NIF_ICON | NativeConstants.NIF_TIP | NativeConstants.NIF_SHOWTIP);
         if (!Shell_NotifyIconW(NativeConstants.NIM_ADD, ref data))
@@ -76,6 +80,7 @@ public sealed class TrayIcon : IDisposable
 
     public void Hide()
     {
+        _wanted = false;
         if (!_added || _window is null) return;
 
         var data = BuildData(0);
@@ -144,9 +149,15 @@ public sealed class TrayIcon : IDisposable
     {
         if (msg == _taskbarCreatedMessage && _taskbarCreatedMessage != 0)
         {
-            Log.Info("Explorer restarted; re-adding the tray icon.");
+            // Also how an icon that could not be added at sign-in, before Explorer was up, gets added.
+            // One the user switched off stays off.
             _added = false;
-            Show();
+            if (_wanted)
+            {
+                Log.Info("Explorer restarted; re-adding the tray icon.");
+                Show();
+            }
+
             handled = true;
             return IntPtr.Zero;
         }

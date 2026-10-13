@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 
 namespace Driftwall.Core;
@@ -26,6 +27,13 @@ public static class Net
         return c;
     }, LazyThreadSafetyMode.ExecutionAndPublication);
 
+    static Net()
+    {
+        // .NET only knows the Unicode encodings, ASCII and Latin-1 out of the box, so a feed sent as
+        // windows-1252 or euc-kr would fail to decode at all. The code pages ship with the runtime.
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
     public static HttpClient Client => _client.Value;
 
     /// <summary>GET a URL and deserialize the JSON body, mapping HTTP failures to SourceException.</summary>
@@ -37,7 +45,7 @@ public static class Net
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         configure?.Invoke(req);
 
-        using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var res = await SendAsync(http, req, HttpCompletionOption.ResponseHeadersRead, ct, providerName).ConfigureAwait(false);
         EnsureOk(res, providerName);
 
         await using var stream = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -53,7 +61,7 @@ public static class Net
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         configure?.Invoke(req);
 
-        using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var res = await SendAsync(http, req, HttpCompletionOption.ResponseHeadersRead, ct, providerName).ConfigureAwait(false);
         EnsureOk(res, providerName);
 
         await using var stream = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -68,9 +76,28 @@ public static class Net
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         configure?.Invoke(req);
 
-        using var res = await http.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
+        using var res = await SendAsync(http, req, HttpCompletionOption.ResponseContentRead, ct, providerName).ConfigureAwait(false);
         EnsureOk(res, providerName);
         return await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sends a request, reporting the client's own timeouts as a <see cref="SourceException"/>.
+    /// HttpClient signals a timeout as a cancellation, and callers rightly read a cancellation as the
+    /// user giving up, so a provider that never answered would otherwise fail without a word. Only a
+    /// cancelled <paramref name="ct"/> still surfaces as one.
+    /// </summary>
+    public static async Task<HttpResponseMessage> SendAsync(
+        HttpClient http, HttpRequestMessage req, HttpCompletionOption completion, CancellationToken ct, string providerName = "Source")
+    {
+        try
+        {
+            return await http.SendAsync(req, completion, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new SourceException($"{providerName} did not respond in time.", inner: ex);
+        }
     }
 
     public static void EnsureOk(HttpResponseMessage res, string providerName)

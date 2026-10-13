@@ -139,9 +139,22 @@ public partial class CreditToast : Window
     /// <summary>Pins the toast to the bottom-right working area of the primary display.</summary>
     private void PositionOnPrimaryDisplay()
     {
-        var work = SystemParameters.WorkArea;
-        Left = work.Right - ActualWidth;
-        Top = work.Bottom - ActualHeight;
+        // The work area in pixels, turned into units with the toast's own scaling, the same scaling
+        // WPF uses to turn Left and Top back into pixels. SystemParameters.WorkArea uses the scaling
+        // the app started with instead, which is wrong once the primary display's scaling has changed.
+        var monitor = MonitorFromPoint(new POINT { X = 0, Y = 0 }, MONITOR_DEFAULTTOPRIMARY);
+        var info = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
+        {
+            var work = SystemParameters.WorkArea;
+            Left = work.Right - ActualWidth;
+            Top = work.Bottom - ActualHeight;
+            return;
+        }
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        Left = info.rcWork.Right / dpi.DpiScaleX - ActualWidth;
+        Top = info.rcWork.Bottom / dpi.DpiScaleY - ActualHeight;
     }
 
     private void OnCardClicked(object sender, MouseButtonEventArgs e)
@@ -182,4 +195,38 @@ public partial class CreditToast : Window
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
     private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    private const uint MONITOR_DEFAULTTOPRIMARY = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 }

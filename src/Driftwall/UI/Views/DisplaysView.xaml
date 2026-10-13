@@ -163,7 +163,7 @@
                                    Style="{StaticResource Text.Caption}"
                                    Foreground="{DynamicResource Brush.Warning}"
                                    Margin="0,4,0,0"
-                                   Visibility="{Binding Enabled, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}" />
+                                   Visibility="{Binding IsLeftAlone, Converter={StaticResource BoolToVisibility}}" />
                     </StackPanel>
 
                     <ToggleButton Grid.Column="1" Style="{StaticResource Switch}"
@@ -173,9 +173,10 @@
 
                     <ComboBox Grid.Column="2" Width="156"
                               HorizontalAlignment="Left" VerticalAlignment="Center"
-                              ItemsSource="{Binding DataContext.ScalingModes, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                              SelectedItem="{Binding ScalingOverride}"
-                              ToolTip="Scaling for this display only. Blank follows the setting above." />
+                              ItemsSource="{Binding ScalingChoices}"
+                              SelectedItem="{Binding SelectedScaling}"
+                              ItemTemplate="{StaticResource Template.NameText}"
+                              ToolTip="Scaling for this display only, or the same as the setting above." />
                 </Grid>
             </Border>
         </DataTemplate>
@@ -302,15 +303,16 @@
                                 Visibility="{Binding HasMultipleMonitors, Converter={StaticResource BoolToVisibility}}">
                         <TextBlock Text="ACROSS DISPLAYS" Style="{StaticResource Text.SectionLabel}" />
                         <WrapPanel Orientation="Horizontal">
-                            <ToggleButton Style="{StaticResource Chip}" Content="Different photo each"
-                                          Margin="0,0,6,6"
-                                          IsChecked="{Binding MultiMonitor, Converter={StaticResource EnumMatch}, ConverterParameter=DifferentPerMonitor}" />
-                            <ToggleButton Style="{StaticResource Chip}" Content="Same photo everywhere"
-                                          Margin="0,0,6,6"
-                                          IsChecked="{Binding MultiMonitor, Converter={StaticResource EnumMatch}, ConverterParameter=SameOnAllMonitors}" />
-                            <ToggleButton Style="{StaticResource Chip}" Content="Span across displays"
-                                          Margin="0,0,6,6"
-                                          IsChecked="{Binding MultiMonitor, Converter={StaticResource EnumMatch}, ConverterParameter=SpanAcrossMonitors}" />
+                            <!-- Radio buttons, so clicking the mode already chosen keeps it lit. -->
+                            <RadioButton Style="{StaticResource Chip}" GroupName="MultiMonitor" Content="Different photo each"
+                                         Margin="0,0,6,6"
+                                         IsChecked="{Binding MultiMonitor, Converter={StaticResource EnumMatch}, ConverterParameter=DifferentPerMonitor}" />
+                            <RadioButton Style="{StaticResource Chip}" GroupName="MultiMonitor" Content="Same photo everywhere"
+                                         Margin="0,0,6,6"
+                                         IsChecked="{Binding MultiMonitor, Converter={StaticResource EnumMatch}, ConverterParameter=SameOnAllMonitors}" />
+                            <RadioButton Style="{StaticResource Chip}" GroupName="MultiMonitor" Content="Span across displays"
+                                         Margin="0,0,6,6"
+                                         IsChecked="{Binding MultiMonitor, Converter={StaticResource EnumMatch}, ConverterParameter=SpanAcrossMonitors}" />
                         </WrapPanel>
                         <TextBlock Text="{Binding MultiMonitorDescription}"
                                    Style="{StaticResource Text.Body}" Margin="0,7,0,0" />
@@ -344,7 +346,7 @@
                     Visibility="{Binding HasMultipleMonitors, Converter={StaticResource BoolToVisibility}}">
                 <StackPanel>
                     <TextBlock Text="PER DISPLAY" Style="{StaticResource Text.SectionLabel}" />
-                    <TextBlock Text="Overrides for a single screen. Leave the scaling blank and it follows the setting above."
+                    <TextBlock Text="Overrides for a single screen. Leave the scaling on Same as above and it follows the setting above."
                                Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,-4,0,12" />
 
                     <Grid Margin="11,18,11,4">

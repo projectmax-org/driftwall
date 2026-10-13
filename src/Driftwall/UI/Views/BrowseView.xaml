@@ -47,19 +47,20 @@
                               ToolTip="Where photos come from" />
 
                     <!-- Mode chips. They wrap onto a second line in a narrow window rather than
-                         running under the button on the right. -->
+                         running under the button on the right. Radio buttons, not toggles, so that
+                         clicking the chip already lit leaves it lit instead of leaving none. -->
                     <WrapPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,12,0" VerticalAlignment="Center">
-                        <ToggleButton Style="{StaticResource Chip}" Content="Top" Margin="0,2,6,2"
-                                      Visibility="{Binding SupportsTop, Converter={StaticResource BoolToVisibility}}"
-                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Top}" />
-                        <ToggleButton Style="{StaticResource Chip}" Content="Categories" Margin="0,2,6,2"
-                                      Visibility="{Binding SupportsCategories, Converter={StaticResource BoolToVisibility}}"
-                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Category}" />
-                        <ToggleButton Style="{StaticResource Chip}" Content="Search" Margin="0,2,6,2"
-                                      Visibility="{Binding SupportsSearch, Converter={StaticResource BoolToVisibility}}"
-                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Search}" />
-                        <ToggleButton Style="{StaticResource Chip}" Content="Random" Margin="0,2,6,2"
-                                      IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Random}" />
+                        <RadioButton Style="{StaticResource Chip}" GroupName="BrowseMode" Content="Top" Margin="0,2,6,2"
+                                     Visibility="{Binding SupportsTop, Converter={StaticResource BoolToVisibility}}"
+                                     IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Top}" />
+                        <RadioButton Style="{StaticResource Chip}" GroupName="BrowseMode" Content="Categories" Margin="0,2,6,2"
+                                     Visibility="{Binding SupportsCategories, Converter={StaticResource BoolToVisibility}}"
+                                     IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Category}" />
+                        <RadioButton Style="{StaticResource Chip}" GroupName="BrowseMode" Content="Search" Margin="0,2,6,2"
+                                     Visibility="{Binding SupportsSearch, Converter={StaticResource BoolToVisibility}}"
+                                     IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Search}" />
+                        <RadioButton Style="{StaticResource Chip}" GroupName="BrowseMode" Content="Random" Margin="0,2,6,2"
+                                     IsChecked="{Binding Mode, Converter={StaticResource EnumMatch}, ConverterParameter=Random}" />
                     </WrapPanel>
 
                     <Button Grid.Column="2" Style="{StaticResource Button.Base}"
@@ -72,10 +73,12 @@
                     </Button>
                 </Grid>
 
-                <!-- Second row: search box / category / time range -->
+                <!-- Second row: search box / category / time range / Search. The range and the
+                     button each have a column; sharing one, the button would cover the range. -->
                 <Grid Margin="0,11,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
@@ -111,7 +114,7 @@
                                   MinWidth="96" />
                     </StackPanel>
 
-                    <Button Grid.Column="1" Style="{StaticResource Button.Accent}" Margin="12,0,0,0"
+                    <Button Grid.Column="2" Style="{StaticResource Button.Accent}" Margin="12,0,0,0"
                             Command="{Binding SearchCommand}"
                             Content="Search"
                             Visibility="{Binding IsSearchMode, Converter={StaticResource BoolToVisibility}}" />
@@ -120,36 +123,75 @@
         </Border>
 
         <!-- ==================== Notices ==================== -->
+        <!-- Each notice is a grid with the text in a star column, not a horizontal stack: a stack
+             gives its text unlimited width, so in a narrow window it never wraps and is cut off,
+             along with any button after it. -->
         <StackPanel Grid.Row="1">
             <Border Background="{DynamicResource Brush.AccentSoft}"
                     BorderBrush="{DynamicResource Brush.Accent}" BorderThickness="0,0,0,1"
                     Padding="20,10"
                     Visibility="{Binding NeedsApiKey, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel Orientation="Horizontal">
-                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Key}"
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Path Grid.Column="0" Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Key}"
                           Stroke="{DynamicResource Brush.Accent}" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding ApiKeyPrompt}" Margin="9,0,0,0" VerticalAlignment="Center"
-                               Foreground="{DynamicResource Brush.TextPrimary}" FontSize="12.5" />
-                    <TextBlock Text="Add it under Settings → API keys." Margin="6,0,0,0" VerticalAlignment="Center"
-                               Style="{StaticResource Text.Caption}" />
-                    <Button Style="{StaticResource Button.Ghost}" MinHeight="28" Padding="10,4"
+                    <WrapPanel Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding ApiKeyPrompt}" Margin="0,0,6,0" VerticalAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource Brush.TextPrimary}" FontSize="12.5" />
+                        <TextBlock Text="Add it under Settings → API keys." VerticalAlignment="Center"
+                                   TextWrapping="Wrap" Style="{StaticResource Text.Caption}" />
+                    </WrapPanel>
+                    <Button Grid.Column="2" Style="{StaticResource Button.Ghost}" MinHeight="28" Padding="10,4"
                             Margin="12,0,0,0" VerticalAlignment="Center"
                             Content="Open Settings"
                             Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=Window}}"
                             CommandParameter="Settings" />
-                </StackPanel>
+                </Grid>
             </Border>
 
             <Border Background="#26F0B347" BorderBrush="{DynamicResource Brush.Warning}" BorderThickness="0,0,0,1"
                     Padding="20,10"
                     Visibility="{Binding TermsWarning, Converter={StaticResource NullToVisibility}}">
-                <StackPanel Orientation="Horizontal">
-                    <Path Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Info}"
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Path Grid.Column="0" Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Info}"
                           Stroke="{DynamicResource Brush.Warning}" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding TermsWarning}" Margin="9,0,0,0" VerticalAlignment="Center"
+                    <TextBlock Grid.Column="1" Text="{Binding TermsWarning}" Margin="9,0,0,0" VerticalAlignment="Center"
                                TextWrapping="Wrap" FontSize="12.5"
                                Foreground="{DynamicResource Brush.TextPrimary}" />
-                </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- A later page failed. The empty state below says why a first page failed, but it is
+                 hidden while earlier photos are on screen. -->
+            <Border Background="#26F0B347" BorderBrush="{DynamicResource Brush.Warning}" BorderThickness="0,0,0,1"
+                    Padding="20,10"
+                    Visibility="{Binding LoadMoreError, Converter={StaticResource NullToVisibility}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Path Grid.Column="0" Style="{StaticResource Icon.Small}" Data="{DynamicResource Icon.Info}"
+                          Stroke="{DynamicResource Brush.Warning}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="{Binding LoadMoreError}" Margin="9,0,0,0" VerticalAlignment="Center"
+                               TextWrapping="Wrap" FontSize="12.5"
+                               Foreground="{DynamicResource Brush.TextPrimary}" />
+                    <Button Grid.Column="2" Style="{StaticResource Button.Ghost}" MinHeight="28" Padding="10,4"
+                            Margin="12,0,0,0" VerticalAlignment="Center"
+                            Content="Try again"
+                            Command="{Binding LoadMoreCommand}"
+                            Visibility="{Binding HasMore, Converter={StaticResource BoolToVisibility}}" />
+                </Grid>
             </Border>
 
             <!-- IsIndeterminate is bound, not hard-coded: a collapsed element's storyboard keeps

@@ -113,17 +113,19 @@ public sealed class PixabaySource : PhotoSourceBase
             throw new SourceException("Pixabay returned an unexpected response shape.");
 
         var items = new List<PhotoItem>(hits.GetArrayLength());
-        var sawHits = false;
         var sawFullResolution = false;
+        var sawTooSmall = false;
 
         foreach (var hit in hits.EnumerateArray())
         {
             if (hit.ValueKind != JsonValueKind.Object) continue;
-            sawHits = true;
             sawFullResolution |= GetString(hit, "fullHDURL") is not null || GetString(hit, "imageURL") is not null;
 
             var item = MapHit(hit, context.TargetWidth, context.TargetHeight);
-            if (item is not null && Matches(item, query)) items.Add(item);
+            if (item is null) continue;
+
+            if (Matches(item, query)) items.Add(item);
+            else if (item.Width < query.MinWidth || item.Height < query.MinHeight) sawTooSmall = true;
         }
 
         if (query.Mode == QueryMode.Random) Random.Shared.Shuffle(CollectionsMarshal.AsSpan(items));
@@ -135,8 +137,10 @@ public sealed class PixabaySource : PhotoSourceBase
 
         // fullHDURL/imageURL ship only to accounts approved for full API access; without them the
         // best available file is largeImageURL at 1280px. Items are sized by the file they really
-        // serve, so on a large display they are filtered out above and this notice says why.
-        var notice = sawHits && !sawFullResolution
+        // serve, so on a large display they are filtered out above and this notice says why. It is
+        // kept for a page that came back empty for that reason: rotation reads any notice as the
+        // source failing, and on a display the 1280px files do cover, nothing has gone wrong.
+        var notice = items.Count == 0 && sawTooSmall && !sawFullResolution
             ? "Pixabay is only serving 1280px images, which are too small for large displays. Request full API access on pixabay.com for sharper wallpapers."
             : null;
 
@@ -337,7 +341,7 @@ public sealed class PixabaySource : PhotoSourceBase
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var res = await Net.SendAsync(http, req, HttpCompletionOption.ResponseHeadersRead, ct, DisplayName).ConfigureAwait(false);
 
         if (res.StatusCode == HttpStatusCode.BadRequest)
         {

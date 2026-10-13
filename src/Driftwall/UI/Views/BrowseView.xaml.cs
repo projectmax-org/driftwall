@@ -15,9 +15,19 @@ public partial class BrowseView : UserControl
     {
         InitializeComponent();
         Loaded += OnLoaded;
+        IsVisibleChanged += OnIsVisibleChanged;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e) => _ = ViewModel?.EnsureLoadedAsync();
+
+    /// <summary>
+    /// The view stays alive while another tab is showing, so coming back is the moment to notice a key
+    /// that was added or removed under Settings in the meantime.
+    /// </summary>
+    private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is true) ViewModel?.RefreshApiKeyState();
+    }
 
     private BrowseViewModel? ViewModel => DataContext as BrowseViewModel;
 
@@ -35,6 +45,9 @@ public partial class BrowseView : UserControl
         var model = ViewModel;
         if (model is null || !model.HasMore || model.IsBusy) return;
         if (e.VerticalChange <= 0) return;
+
+        // After a page has failed, wait for the user to try again rather than asking on every scroll.
+        if (model.LoadMoreError is not null) return;
 
         double remaining = e.ExtentHeight - (e.VerticalOffset + e.ViewportHeight);
         if (remaining > InfiniteScrollThreshold) return;

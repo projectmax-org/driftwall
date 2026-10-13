@@ -37,19 +37,15 @@ public sealed class LocalFolderSource : PhotoSourceBase
     public override bool SupportsCategories => false;
     public override IReadOnlyList<string> SupportedTimeRanges => TimeRanges;
 
-    public override string? Validate(SourceContext context)
-    {
-        var folders = ReadFolders(context.Selection);
-        if (folders.Count == 0)
-            return "No folder picked yet. Choose one or more folders in Settings → Sources.";
-
-        var missing = folders.FindAll(static folder => !Directory.Exists(folder));
-        if (missing.Count < folders.Count) return null;
-
-        return missing.Count == 1
-            ? $"The folder \"{missing[0]}\" no longer exists."
-            : "None of these folders exist any more: " + string.Join(", ", missing);
-    }
+    /// <summary>
+    /// Only checks that a folder is configured. Whether it still exists is checked in
+    /// <see cref="Scan"/>, off the calling thread: this can run on the UI thread, and asking about an
+    /// offline network share blocks for as long as the connection takes to time out.
+    /// </summary>
+    public override string? Validate(SourceContext context) =>
+        ReadFolders(context.Selection).Count == 0
+            ? "No folder picked yet. Choose one or more folders in Settings → Sources."
+            : null;
 
     public override async Task<PhotoPage> FetchAsync(SourceQuery query, SourceContext context, CancellationToken ct)
     {
@@ -65,7 +61,13 @@ public sealed class LocalFolderSource : PhotoSourceBase
 
     private PhotoPage Scan(SourceQuery query, List<string> folders, bool recursive, CancellationToken ct)
     {
-        var candidates = Collect(folders, recursive, KeywordFor(query), ct);
+        var existing = folders.FindAll(static folder => Directory.Exists(folder));
+        if (existing.Count == 0)
+            return PhotoPage.Message(folders.Count == 1
+                ? $"The folder \"{folders[0]}\" no longer exists."
+                : "None of these folders exist any more: " + string.Join(", ", folders));
+
+        var candidates = Collect(existing, recursive, KeywordFor(query), ct);
         if (candidates.Count == 0)
             return PhotoPage.Message(query.Mode == QueryMode.Search
                 ? $"No file or folder name in your local folders contains \"{query.Keyword}\"."
@@ -201,7 +203,9 @@ public sealed class LocalFolderSource : PhotoSourceBase
             Width = size.Width,
             Height = size.Height,
             Title = Path.GetFileNameWithoutExtension(candidate.Path),
-            SourcePageUrl = directory,
+
+            // No SourcePageUrl: a folder is not a web page, and every "view online" action would
+            // ignore it, leaving a link that is enabled but does nothing.
             License = "Local file",
             Tags = FolderTags(directory, folders),
         };
@@ -336,7 +340,14 @@ public sealed class LocalFolderSource : PhotoSourceBase
     /// <summary>Folder names below the configured root make useful, free tags ("Trips", "2024").</summary>
     private static IReadOnlyList<string> FolderTags(string directory, List<string> folders)
     {
-        var root = folders.Find(folder => directory.StartsWith(folder, StringComparison.OrdinalIgnoreCase));
+        // The root must be the directory itself or end at a separator inside it. A bare prefix test
+        // would let "D:\Pics" claim "D:\Pics Old\Trips" and turn "Old" into a tag. A drive root such as
+        // "D:\" keeps its separator through ReadFolders, so it already ends at one.
+        var root = folders.Find(folder =>
+            directory.StartsWith(folder, StringComparison.OrdinalIgnoreCase)
+            && (directory.Length == folder.Length
+                || Path.EndsInDirectorySeparator(folder)
+                || directory[folder.Length] is '\\' or '/'));
         if (root is null || directory.Length <= root.Length) return [];
 
         return directory[root.Length..]
@@ -360,24 +371,29 @@ public sealed class LocalFolderSource : PhotoSourceBase
     {
         try
         {
-            using var stream = new FileStream(
-                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
-                bufferSize: 4096, FileOptions.SequentialScan);
+            using (var stream = OpenForReading(path))
+            {
+                Span<byte> header = stackalloc byte[32];
+                int read = stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
 
-            Span<byte> header = stackalloc byte[32];
-            int read = stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+                var size = ReadFromHeader(header[..read], stream);
+                if (size.Width > 0 && size.Height > 0) return size;
+            }
 
-            var size = ReadFromHeader(header[..read], stream);
-            if (size.Width > 0 && size.Height > 0) return size;
-
-            stream.Position = 0;
-            return ReadWithImagingDecoder(stream);
+            // WPF imaging objects belong to the thread that creates them. This runs on a pool thread,
+            // and each pool thread that created one would keep a dispatcher and its hidden window for
+            // good, so the decoder runs on the render thread instead. That thread never waits on this one.
+            return RenderThread.InvokeAsync(() => ReadWithImagingDecoder(path)).GetAwaiter().GetResult();
         }
         catch
         {
             return default;   // locked, truncated or in a format Windows has no codec for
         }
     }
+
+    private static FileStream OpenForReading(string path) => new(
+        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+        bufferSize: 4096, FileOptions.SequentialScan);
 
     private static (int Width, int Height) ReadFromHeader(ReadOnlySpan<byte> header, Stream stream)
     {
@@ -421,9 +437,9 @@ public sealed class LocalFolderSource : PhotoSourceBase
     {
         var chunk = header[12..16];
 
-        // Extended format: 24-bit canvas width/height minus one, after three bytes of flags.
-        if (chunk.SequenceEqual("VP8X"u8) && header.Length >= 29)
-            return ((int)ReadUInt24LittleEndian(header[23..]) + 1, (int)ReadUInt24LittleEndian(header[26..]) + 1);
+        // Extended format: a flags byte and three reserved bytes, then 24-bit canvas width/height minus one.
+        if (chunk.SequenceEqual("VP8X"u8) && header.Length >= 30)
+            return ((int)ReadUInt24LittleEndian(header[24..]) + 1, (int)ReadUInt24LittleEndian(header[27..]) + 1);
 
         // Lossy: the VP8 key frame carries 14-bit dimensions after the 9D 01 2A start code.
         if (chunk.SequenceEqual("VP8 "u8) && header.Length >= 30
@@ -444,11 +460,16 @@ public sealed class LocalFolderSource : PhotoSourceBase
     private static uint ReadUInt24LittleEndian(ReadOnlySpan<byte> source) =>
         (uint)(source[0] | (source[1] << 8) | (source[2] << 16));
 
-    /// <summary>Walks JPEG segments, seeking over each payload, until it reaches a frame header.</summary>
+    /// <summary>
+    /// Walks JPEG segments, seeking over each payload, until it reaches a frame header. The size is the
+    /// one the photo is shown at: a phone stores a portrait shot as landscape pixels plus an Exif
+    /// orientation, and the wallpaper renderer turns it upright.
+    /// </summary>
     private static (int Width, int Height) ReadJpegSize(Stream stream)
     {
         stream.Position = 2;   // past the SOI marker
         Span<byte> segment = stackalloc byte[5];
+        ushort orientation = 0;   // none found yet
 
         while (true)
         {
@@ -475,27 +496,85 @@ public sealed class LocalFolderSource : PhotoSourceBase
                 if (stream.ReadAtLeast(segment, segment.Length, throwOnEndOfStream: false) < segment.Length)
                     return default;
 
-                return (BinaryPrimitives.ReadUInt16BigEndian(segment[3..]),   // after precision and height
-                        BinaryPrimitives.ReadUInt16BigEndian(segment[1..3]));
+                int width = BinaryPrimitives.ReadUInt16BigEndian(segment[3..]);   // after precision and height
+                int height = BinaryPrimitives.ReadUInt16BigEndian(segment[1..3]);
+
+                // 5 to 8 are the orientations ImageComposer turns a quarter (its IsSideways).
+                return (orientation is >= 5 and <= 8) ? (height, width) : (width, height);
             }
 
-            stream.Position += length - 2;
+            long next = stream.Position + length - 2;
+
+            // The Exif block is in an APP1 segment, which always comes before the frame header. XMP
+            // uses APP1 too, so the search goes on until one of them turns out to be Exif.
+            if (marker == 0xE1 && orientation == 0) orientation = ReadExifOrientation(stream, length - 2);
+
+            stream.Position = next;
         }
     }
 
     /// <summary>
-    /// Fallback for TIFF, AVIF, HEIC and unusual headers. WIC takes the frame size from decoder
-    /// metadata, so no pixels are decoded, but <see cref="BitmapCacheOption.None"/> means the frame
-    /// reads through the stream on demand — the size must be taken before the caller closes it.
+    /// The orientation tag (274) from an APP1 payload, read from the first directory of its TIFF block.
+    /// 0 when the segment is not Exif or holds no usable tag.
     /// </summary>
-    private static (int Width, int Height) ReadWithImagingDecoder(Stream stream)
+    private static ushort ReadExifOrientation(Stream stream, int payloadLength)
     {
-        var frame = BitmapFrame.Create(
-            stream,
-            BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile,
-            BitmapCacheOption.None);
+        // That directory sits right after the TIFF header in practice, so the first few kilobytes are
+        // enough, and the thumbnail that usually follows is never read.
+        Span<byte> payload = stackalloc byte[Math.Min(payloadLength, 4096)];
+        payload = payload[..stream.ReadAtLeast(payload, payload.Length, throwOnEndOfStream: false)];
+        if (payload.Length < 6 + 8 || !payload.StartsWith("Exif\0\0"u8)) return 0;
 
-        return (frame.PixelWidth, frame.PixelHeight);
+        var tiff = payload[6..];
+        bool little = tiff.StartsWith("II"u8);
+        if (!little && !tiff.StartsWith("MM"u8)) return 0;
+
+        uint directory = little ? BinaryPrimitives.ReadUInt32LittleEndian(tiff[4..]) : BinaryPrimitives.ReadUInt32BigEndian(tiff[4..]);
+        if (directory > tiff.Length - 2) return 0;
+
+        int start = (int)directory;
+        int count = ReadUInt16(tiff[start..], little);
+        for (int i = 0; i < count; i++)
+        {
+            int entry = start + 2 + (i * 12);
+            if (entry + 12 > tiff.Length) return 0;
+            if (ReadUInt16(tiff[entry..], little) != 0x0112) continue;
+
+            // Type 3 is SHORT, the only form the renderer's metadata query reads. Its value is in the
+            // first two of the entry's four value bytes.
+            if (ReadUInt16(tiff[(entry + 2)..], little) != 3) return 0;
+            ushort value = ReadUInt16(tiff[(entry + 8)..], little);
+            return (value is >= 1 and <= 8) ? value : (ushort)0;
+        }
+
+        return 0;
+    }
+
+    private static ushort ReadUInt16(ReadOnlySpan<byte> source, bool little) =>
+        little ? BinaryPrimitives.ReadUInt16LittleEndian(source) : BinaryPrimitives.ReadUInt16BigEndian(source);
+
+    /// <summary>
+    /// Fallback for TIFF, AVIF, HEIC and unusual headers, run on <see cref="RenderThread"/>. WIC takes
+    /// the frame size from decoder metadata, so no pixels are decoded, but
+    /// <see cref="BitmapCacheOption.None"/> means the frame reads through the stream on demand — the
+    /// size must be taken before the stream closes.
+    /// </summary>
+    private static (int Width, int Height) ReadWithImagingDecoder(string path)
+    {
+        try
+        {
+            using var stream = OpenForReading(path);
+            var frame = BitmapFrame.Create(
+                stream,
+                BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile,
+                BitmapCacheOption.None);
+
+            return (frame.PixelWidth, frame.PixelHeight);
+        }
+        catch
+        {
+            return default;
+        }
     }
 
     private readonly record struct Candidate(string Path, DateTimeOffset LastWriteUtc);

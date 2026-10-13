@@ -555,9 +555,13 @@
         </Style.Triggers>
     </Style>
 
+    <!-- No CanContentScroll setter. A ScrollViewer inside a control's template takes the control's
+         ScrollViewer.CanContentScroll only when nothing else has set its own, and a style setter
+         counts: it would override the photo grids' True and stop their virtualising panel doing the
+         scrolling, so every tile would be created and kept. A ScrollViewer on its own already
+         defaults to False, and the ComboBox and ListBox styles below keep theirs at False. -->
     <Style TargetType="ScrollViewer">
         <Setter Property="PanningMode" Value="VerticalOnly" />
-        <Setter Property="CanContentScroll" Value="False" />
     </Style>
 
     <!-- ============================ ComboBox ============================ -->
@@ -639,6 +643,8 @@
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisual}" />
         <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+        <!-- Smooth pixel scrolling in the drop-down; the system theme would scroll by whole items. -->
+        <Setter Property="ScrollViewer.CanContentScroll" Value="False" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBox">
@@ -940,10 +946,13 @@
 
     <!-- ============================ Lists ============================ -->
 
+    <!-- Pixel scrolling for plain lists. The photo grids set CanContentScroll back to True on
+         themselves, which hands scrolling to their virtualising panel. -->
     <Style TargetType="ListBox">
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="ScrollViewer.CanContentScroll" Value="False" />
         <Setter Property="Foreground" Value="{DynamicResource Brush.TextPrimary}" />
     </Style>
 

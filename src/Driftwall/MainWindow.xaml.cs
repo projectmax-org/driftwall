@@ -72,6 +72,42 @@ public partial class MainWindow : Window
     {
         if (WindowState == WindowState.Minimized) _viewModel.StopCountdown();
         else _viewModel.StartCountdown();
+
+        UpdateMaximizedInset(VisualTreeHelper.GetDpi(this));
+    }
+
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        UpdateMaximizedInset(newDpi);
+    }
+
+    /// <summary>
+    /// Windows makes a maximised window larger than the screen by its resizing frame on every side.
+    /// This window draws all of itself as client area, so that strip would hold the edges of the title
+    /// bar, the rail and the status bar, cut off at the screen's edge. The content is pulled in by
+    /// the same amount, which depends on the display's scaling.
+    /// </summary>
+    private void UpdateMaximizedInset(DpiScale dpi)
+    {
+        var inset = new Thickness(0);
+        if (WindowState == WindowState.Maximized)
+        {
+            try
+            {
+                uint ppi = (uint)Math.Round(dpi.PixelsPerInchX);
+                int padded = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, ppi);
+                double x = (GetSystemMetricsForDpi(SM_CXSIZEFRAME, ppi) + padded) / dpi.DpiScaleX;
+                double y = (GetSystemMetricsForDpi(SM_CYSIZEFRAME, ppi) + padded) / dpi.DpiScaleY;
+                inset = new Thickness(x, y, x, y);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Could not measure the window frame for the maximised layout.", ex);
+            }
+        }
+
+        RootGrid.Margin = inset;
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -90,12 +126,13 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
 
-            case Key.Right when Keyboard.Modifiers == ModifierKeys.Control:
+            // In a text box these move the caret by a word, and that is what they must keep doing there.
+            case Key.Right when Keyboard.Modifiers == ModifierKeys.Control && Keyboard.FocusedElement is not TextBoxBase:
                 _viewModel.NextCommand.Execute(null);
                 e.Handled = true;
                 break;
 
-            case Key.Left when Keyboard.Modifiers == ModifierKeys.Control:
+            case Key.Left when Keyboard.Modifiers == ModifierKeys.Control && Keyboard.FocusedElement is not TextBoxBase:
                 _viewModel.PreviousCommand.Execute(null);
                 e.Handled = true;
                 break;
@@ -128,8 +165,10 @@ public partial class MainWindow : Window
         return true;
     }
 
+    // An open drop-down list has focus on one of its items, inside a popup whose visual tree ends at
+    // its own root. Only the logical parent leads from there back to the popup and its ComboBox.
     private static DependencyObject? GetParent(DependencyObject node) =>
-        node is Visual or Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
+        (node is Visual or Visual3D ? VisualTreeHelper.GetParent(node) : null) ?? LogicalTreeHelper.GetParent(node);
 
     /// <summary>Hides the window and leaves the app running in the notification area.</summary>
     private void HideToTray()
@@ -237,4 +276,11 @@ public partial class MainWindow : Window
 
     [DllImport("dwmapi.dll", PreserveSig = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    private const int SM_CXSIZEFRAME = 32;
+    private const int SM_CYSIZEFRAME = 33;
+    private const int SM_CXPADDEDBORDER = 92;
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetricsForDpi(int index, uint dpi);
 }

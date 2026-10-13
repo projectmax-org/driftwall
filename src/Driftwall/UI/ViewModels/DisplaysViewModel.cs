@@ -7,19 +7,39 @@ using Driftwall.Wallpaper;
 
 namespace Driftwall.UI.ViewModels;
 
+/// <summary>One entry in a display's own scaling list. A null mode follows the setting for every display.</summary>
+public sealed record ScalingChoice(ScalingMode? Mode, string Name);
+
 /// <summary>One monitor, with what is on it and the settings that apply only to it.</summary>
 public sealed class MonitorViewModel : ViewModelBase
 {
+    /// <summary>
+    /// A display's own scaling list. "Same as above" is a real entry rather than an empty box, so a
+    /// display given a mode of its own can be put back to following the setting above.
+    /// </summary>
+    private static readonly IReadOnlyList<ScalingChoice> AllScalingChoices =
+    [
+        new(null, "Same as above"),
+        new(ScalingMode.Fill, "Fill"),
+        new(ScalingMode.Fit, "Fit"),
+        new(ScalingMode.Stretch, "Stretch"),
+        new(ScalingMode.Center, "Center"),
+        new(ScalingMode.Tile, "Tile"),
+    ];
+
     private readonly SettingsStore _settings;
     private readonly Action _changed;
+    private readonly Func<bool> _anyIncluded;
     private BitmapSource? _preview;
     private PhotoItem? _photo;
 
-    public MonitorViewModel(MonitorInfo monitor, SettingsStore settings, Action changed)
+    /// <param name="anyIncluded">Whether any connected display is switched on for rotation.</param>
+    public MonitorViewModel(MonitorInfo monitor, SettingsStore settings, Action changed, Func<bool> anyIncluded)
     {
         Monitor = monitor;
         _settings = settings;
         _changed = changed;
+        _anyIncluded = anyIncluded;
     }
 
     public MonitorInfo Monitor { get; }
@@ -72,6 +92,15 @@ public sealed class MonitorViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// True when rotation passes this display by. With every display switched off none is: the
+    /// wallpaper then goes on all of them, as there would otherwise be nothing to change.
+    /// </summary>
+    public bool IsLeftAlone => !Enabled && _anyIncluded();
+
+    /// <summary>Called when any display is switched on or off, since that can change this one's answer.</summary>
+    public void RaiseIsLeftAlone() => Raise(nameof(IsLeftAlone));
+
     /// <summary>Null means "use the global scaling mode".</summary>
     public ScalingMode? ScalingOverride
     {
@@ -84,7 +113,21 @@ public sealed class MonitorViewModel : ViewModelBase
             entry.ScalingOverride = value;
             _settings.Touch();
             OnPropertyChanged();
+            Raise(nameof(SelectedScaling));
             _changed();
+        }
+    }
+
+    public IReadOnlyList<ScalingChoice> ScalingChoices => AllScalingChoices;
+
+    /// <summary>The entry in <see cref="ScalingChoices"/> for <see cref="ScalingOverride"/>.</summary>
+    public ScalingChoice? SelectedScaling
+    {
+        get => AllScalingChoices.FirstOrDefault(c => c.Mode == ScalingOverride);
+        set
+        {
+            // The list hands back null while its row is being taken down, which is no choice at all.
+            if (value is not null) ScalingOverride = value.Mode;
         }
     }
 
@@ -122,6 +165,9 @@ public sealed class DisplaysViewModel : ViewModelBase
     private readonly AppServices _services;
     private readonly DispatcherTimer _reapplyTimer;
     private string? _statusMessage;
+
+    /// <summary>Set by a switch to a different photo on each display, for the re-apply that follows.</summary>
+    private bool _spreadOutOnReapply;
 
     public DisplaysViewModel(AppServices services)
     {
@@ -163,6 +209,10 @@ public sealed class DisplaysViewModel : ViewModelBase
             _services.Settings.Update(s => s.MultiMonitor = value);
             OnPropertyChanged();
             Raise(nameof(MultiMonitorDescription));
+
+            // Coming from a shared or spanned photo, a re-render alone would leave that one photo on
+            // every display; each of them is given its own instead.
+            if (value == MultiMonitorMode.DifferentPerMonitor) _spreadOutOnReapply = true;
             ScheduleReapply();
         }
     }
@@ -246,7 +296,7 @@ public sealed class DisplaysViewModel : ViewModelBase
         Monitors.Clear();
 
         foreach (var monitor in _services.Engine.Monitors)
-            Monitors.Add(new MonitorViewModel(monitor, _services.Settings, ScheduleReapply));
+            Monitors.Add(new MonitorViewModel(monitor, _services.Settings, OnMonitorChanged, () => Monitors.Any(m => m.Enabled)));
 
         Raise(nameof(HasMultipleMonitors), nameof(LayoutSummary));
         UpdatePreviews();
@@ -264,13 +314,24 @@ public sealed class DisplaysViewModel : ViewModelBase
         _reapplyTimer.Start();
     }
 
+    private void OnMonitorChanged()
+    {
+        // Whether a display is left alone depends on the others too, so every row is asked again.
+        foreach (var monitor in Monitors) monitor.RaiseIsLeftAlone();
+        ScheduleReapply();
+    }
+
     private async Task ReapplyAsync()
     {
         // Nothing on the desktop yet means nothing to re-fit; the first change will use the new settings.
         if (_services.Rotation.CurrentPhotos.Count == 0) return;
 
         StatusMessage = "Updating the wallpaper...";
-        bool ok = await _services.Rotation.RefreshAsync().ConfigureAwait(true);
+        bool spreadOut = _spreadOutOnReapply;
+        _spreadOutOnReapply = false;
+        bool ok = spreadOut
+            ? await _services.Rotation.SpreadOutAsync().ConfigureAwait(true)
+            : await _services.Rotation.RefreshAsync().ConfigureAwait(true);
         StatusMessage = ok ? "Wallpaper updated with the new settings." : "Could not re-render the wallpaper.";
     }
 
@@ -328,28 +389,21 @@ public sealed class DisplaysViewModel : ViewModelBase
     {
         if (parameter is not MonitorViewModel monitor) return;
 
-        StatusMessage = $"Finding a new photo for {monitor.Name}...";
-
-        // Reuses the rotation queue so the photo respects the user's configured sources.
-        var photo = await NextPhotoAsync().ConfigureAwait(true);
-        if (photo is null)
+        if (monitor.IsLeftAlone)
         {
-            StatusMessage = "No photos available. Check your sources.";
+            StatusMessage = $"{monitor.Name} is not included in rotation. Switch it on under Per display first.";
             return;
         }
 
-        bool ok = await _services.Rotation.ApplyToMonitorAsync(photo, monitor.Monitor).ConfigureAwait(true);
-        StatusMessage = ok ? $"{monitor.Name} updated." : $"Could not update {monitor.Name}.";
-    }
+        StatusMessage = $"Finding a new photo for {monitor.Name}...";
 
-    private async Task<PhotoItem?> NextPhotoAsync()
-    {
-        // The rotation service owns the queue, so ask it for a change and read back what it chose.
-        var before = _services.Rotation.CurrentPhotos.FirstOrDefault()?.Key;
-        await _services.Rotation.NextAsync().ConfigureAwait(true);
-
-        var after = _services.Rotation.CurrentPhotos.FirstOrDefault();
-        return after?.Key == before ? null : after;
+        // Reuses the rotation queue so the photo respects the user's configured sources. The service
+        // reports why when it fails, so the line here only says which display it was.
+        bool ok = await _services.Rotation.NextForMonitorAsync(monitor.Monitor).ConfigureAwait(true);
+        bool shared = MultiMonitor != MultiMonitorMode.DifferentPerMonitor && Monitors.Count(m => !m.IsLeftAlone) > 1;
+        StatusMessage = !ok ? $"Could not update {monitor.Name}."
+            : shared ? "Every display updated, as they share one photo."
+            : $"{monitor.Name} updated.";
     }
 
     private void OpenRendered(object? parameter)

@@ -41,8 +41,21 @@ public sealed class RotationService : IDisposable
 
     private readonly Lock _queueGate = new();
     private readonly List<PhotoItem> _queue = new();
-    private readonly List<PhotoItem> _history = new();
+
+    /// <summary>
+    /// One entry per change, holding every photo on screen after it, so Previous brings back the
+    /// whole desktop as it was rather than one of its photos on every display.
+    /// </summary>
+    private readonly List<IReadOnlyList<PhotoItem>> _history = new();
     private readonly HashSet<string> _recentKeys = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The photo each display was last given, by monitor id. A display switched off since goes on
+    /// showing it, so a re-render after it is switched back on puts that back rather than a copy of
+    /// another display's. Only touched while the engine holds its apply lock: written from its
+    /// Applied event, read from the per-monitor callbacks it calls.
+    /// </summary>
+    private readonly Dictionary<string, PhotoItem> _photoByMonitor = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Photos a refill turned away only because they were shown recently, kept in case every source
@@ -79,9 +92,11 @@ public sealed class RotationService : IDisposable
             _recentStamp[key] = ++_stampCounter;
         }
 
-        _history.AddRange(_state.CurrentPhotos);
+        if (_state.CurrentPhotos.Count > 0) _history.Add(_state.CurrentPhotos.ToList());
         foreach (var photo in _state.CurrentPhotos) _recentStamp[photo.Key] = ++_stampCounter;
         _historyPosition = _history.Count - 1;
+
+        _engine.Applied += OnApplied;
     }
 
     private AppSettings Settings => _settingsStore.Settings;
@@ -213,12 +228,57 @@ public sealed class RotationService : IDisposable
     /// </summary>
     public async Task<bool> RefreshAsync(CancellationToken ct = default)
     {
-        var current = CurrentPhotos;
-        if (current.Count == 0) return await NextAsync(ct).ConfigureAwait(false);
+        if (CurrentPhotos.Count == 0) return await NextAsync(ct).ConfigureAwait(false);
 
-        var monitors = _engine.ActiveMonitors(Settings);
         Report("Refreshing wallpaper...");
-        return await ApplyAsync(current, monitors, ct).ConfigureAwait(false);
+
+        // What is on screen is read only once the engine holds its lock. Read any earlier, a change
+        // still being applied would be undone straight after it landed by the photos from before it.
+        Dictionary<string, PhotoItem>? assignment = null;
+        return await ApplyChosenAsync(m => (assignment ??= RefreshAssignment()).GetValueOrDefault(m.Id), ct)
+            .ConfigureAwait(false) is not null;
+    }
+
+    /// <summary>
+    /// Re-applies what is on screen after a switch to a different photo on each display. Displays still
+    /// sharing a photo from the mode before get one of their own from the queue. Only for that switch:
+    /// a photo the user put on every display on purpose is left to an ordinary refresh.
+    /// </summary>
+    public async Task<bool> SpreadOutAsync(CancellationToken ct = default)
+    {
+        var current = _engine.Current;
+        if (Settings.MultiMonitor != MultiMonitorMode.DifferentPerMonitor || current is null || CurrentPhotos.Count == 0)
+            return await RefreshAsync(ct).ConfigureAwait(false);
+
+        // Every display after the first to show a photo is one that shares it.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var sharing = new List<MonitorInfo>();
+        foreach (var monitor in _engine.ActiveMonitors(Settings))
+        {
+            var shown = current.Assignments
+                .FirstOrDefault(a => string.Equals(a.Monitor.Id, monitor.Id, StringComparison.OrdinalIgnoreCase))?.Photo;
+            if (shown is not null && !seen.Add(shown.Key)) sharing.Add(monitor);
+        }
+
+        if (sharing.Count == 0) return await RefreshAsync(ct).ConfigureAwait(false);
+
+        Report("Finding a photo for each display...");
+        var fresh = await TakeAsync(sharing.Count, sharing, ct).ConfigureAwait(false);
+        var undersized = await FindUndersizedAsync(fresh, sharing, ct).ConfigureAwait(false);
+        fresh.RemoveAll(undersized.Contains);
+        if (fresh.Count == 0) return await RefreshAsync(ct).ConfigureAwait(false);
+
+        var theirs = BuildAssignment(fresh, sharing);
+        Dictionary<string, PhotoItem>? others = null;
+        var application = await ApplyChosenAsync(
+            m => theirs.TryGetValue(m.Id, out var photo) ? photo : (others ??= RefreshAssignment()).GetValueOrDefault(m.Id),
+            ct).ConfigureAwait(false);
+        if (application is null) return false;
+
+        // A change in its own right, so Previous goes back to the shared photo.
+        RecordHistory(application.Assignments.Select(a => a.Photo).ToList());
+        _ = PrefetchAsync();
+        return true;
     }
 
     /// <summary>Applies one specific photo to every monitor. Used by "Set as wallpaper" in the browser.</summary>
@@ -227,37 +287,83 @@ public sealed class RotationService : IDisposable
         var monitors = _engine.ActiveMonitors(Settings);
         var picks = new List<PhotoItem> { photo };
         RecordHistory(picks);
-        return await ApplyAsync(picks, monitors, ct).ConfigureAwait(false);
+        if (await ApplyAsync(picks, monitors, ct).ConfigureAwait(false)) return true;
+
+        // As in NextAsync: Previous never leads to a photo that did not reach the desktop.
+        ForgetHistory(picks);
+        return false;
     }
 
     /// <summary>Applies one specific photo to a single monitor, leaving the others alone.</summary>
-    public async Task<bool> ApplyToMonitorAsync(PhotoItem photo, MonitorInfo monitor, CancellationToken ct = default)
+    public async Task<bool> ApplyToMonitorAsync(PhotoItem photo, MonitorInfo monitor, CancellationToken ct = default) =>
+        await ApplyToMonitorCoreAsync(photo, monitor, ct).ConfigureAwait(false) is not null;
+
+    /// <summary>
+    /// Puts the next photo from the queue on one monitor, leaving the others as they are. Where every
+    /// display shares one photo, one of them cannot change on its own, so this is an ordinary change.
+    /// </summary>
+    public async Task<bool> NextForMonitorAsync(MonitorInfo monitor, CancellationToken ct = default)
     {
-        var existing = _engine.Current?.Assignments.ToDictionary(a => a.Monitor.Id, a => a.Photo, StringComparer.OrdinalIgnoreCase)
-                       ?? new Dictionary<string, PhotoItem>(StringComparer.OrdinalIgnoreCase);
+        if (!_engine.ActiveMonitors(Settings).Any(m => string.Equals(m.Id, monitor.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            Report($"{monitor.Name} is not included in rotation. Switch it on in Displays first.", isError: true);
+            return false;
+        }
 
-        var application = await _engine.ApplyAsync(
-            m => string.Equals(m.Id, monitor.Id, StringComparison.OrdinalIgnoreCase)
-                ? photo
-                : existing.GetValueOrDefault(m.Id),
-            Settings, ct).ConfigureAwait(false);
+        if (Settings.MultiMonitor != MultiMonitorMode.DifferentPerMonitor) return await NextAsync(ct).ConfigureAwait(false);
 
-        if (application is null) return false;
+        var target = new List<MonitorInfo> { monitor };
+        int undersizedSkips = 0;
 
-        PersistState(application.Assignments.Select(a => a.Photo).ToList());
-        Report($"Applied to {monitor.Name}.");
-        return true;
+        // The same allowances as a full change: a photo that will not download costs one attempt, and
+        // one too small for the display is passed over a limited number of times.
+        for (int attempt = 1; attempt <= MaxApplyAttempts; attempt++)
+        {
+            var picks = await TakeAsync(1, target, ct).ConfigureAwait(false);
+            if (picks.Count == 0)
+            {
+                Report("No photos available. Check your sources in Settings.", isError: true);
+                return false;
+            }
+
+            if (undersizedSkips < MaxUndersizedSkips)
+            {
+                var undersized = await FindUndersizedAsync(picks, target, ct).ConfigureAwait(false);
+                if (ct.IsCancellationRequested) return false;
+                if (undersized.Count > 0)
+                {
+                    undersizedSkips++;
+                    attempt--;
+                    continue;
+                }
+            }
+
+            var application = await ApplyToMonitorCoreAsync(picks[0], monitor, ct, reportFailure: attempt == MaxApplyAttempts)
+                .ConfigureAwait(false);
+            if (application is not null)
+            {
+                // Recorded as the whole desktop it left, so Previous puts every display back as it was.
+                RecordHistory(application.Assignments.Select(a => a.Photo).ToList());
+                _ = PrefetchAsync();
+                return true;
+            }
+
+            if (ct.IsCancellationRequested) return false;
+            Log.Info($"Could not use {picks[0].Key} on {monitor.Name}; trying the next photo ({attempt}/{MaxApplyAttempts}).");
+        }
+
+        return false;
     }
 
     // ---------------- applying ----------------
 
     private async Task<bool> ApplyFromHistoryAsync(CancellationToken ct)
     {
-        var photo = _history.ElementAtOrDefault(_historyPosition);
-        if (photo is null) return false;
+        var photos = _history.ElementAtOrDefault(_historyPosition);
+        if (photos is null || photos.Count == 0) return false;
 
         var monitors = _engine.ActiveMonitors(Settings);
-        return await ApplyAsync(new List<PhotoItem> { photo }, monitors, ct).ConfigureAwait(false);
+        return await ApplyAsync(photos, monitors, ct).ConfigureAwait(false);
     }
 
     private async Task<bool> ApplyAsync(
@@ -265,37 +371,103 @@ public sealed class RotationService : IDisposable
     {
         if (picks.Count == 0) return false;
 
+        var assignment = BuildAssignment(picks, monitors);
+        return await ApplyChosenAsync(m => assignment.GetValueOrDefault(m.Id), ct, reportFailure).ConfigureAwait(false) is not null;
+    }
+
+    private async Task<WallpaperApplication?> ApplyToMonitorCoreAsync(
+        PhotoItem photo, MonitorInfo monitor, CancellationToken ct, bool reportFailure = true)
+    {
+        // The other displays are looked up only once the engine holds its lock, so they keep what the
+        // change before this one gave them, not what they showed when this was asked for.
+        Dictionary<string, PhotoItem>? others = null;
+        var application = await ApplyChosenAsync(
+            m => string.Equals(m.Id, monitor.Id, StringComparison.OrdinalIgnoreCase)
+                ? photo
+                : (others ??= RefreshAssignment()).GetValueOrDefault(m.Id),
+            ct, reportFailure, reportSuccess: false).ConfigureAwait(false);
+
+        if (application is null) return null;
+
+        // The other displays are rendered again too, so the change can go through without reaching
+        // this one: its photo would not download, say.
+        if (!application.Assignments.Any(a =>
+                string.Equals(a.Monitor.Id, monitor.Id, StringComparison.OrdinalIgnoreCase) && a.Photo.Key == photo.Key))
+        {
+            if (reportFailure) Report($"Could not apply the wallpaper to {monitor.Name}. See the log for details.", isError: true);
+            return null;
+        }
+
+        Report($"Applied to {monitor.Name}.");
+        return application;
+    }
+
+    /// <summary>
+    /// Applies the photo <paramref name="photoForMonitor"/> chooses for each monitor, then saves and
+    /// reports the result. The engine asks for each photo only once it holds its apply lock.
+    /// </summary>
+    private async Task<WallpaperApplication?> ApplyChosenAsync(
+        Func<MonitorInfo, PhotoItem?> photoForMonitor, CancellationToken ct, bool reportFailure = true, bool reportSuccess = true)
+    {
         try
         {
-            var assignment = BuildAssignment(picks, monitors);
-            var application = await _engine.ApplyAsync(m => assignment.GetValueOrDefault(m.Id), Settings, ct)
-                .ConfigureAwait(false);
+            var application = await _engine.ApplyAsync(photoForMonitor, Settings, ct).ConfigureAwait(false);
 
             if (application is null)
             {
                 if (reportFailure) Report("Could not apply the wallpaper. See the log for details.", isError: true);
-                return false;
+                return null;
             }
 
             PersistState(application.Assignments.Select(a => a.Photo).ToList());
 
-            var primary = application.PrimaryPhoto;
-            Report(primary is null
-                ? "Wallpaper updated."
-                : $"{primary.Title ?? "Untitled"} - {primary.AuthorName ?? primary.ProviderName}");
+            if (reportSuccess)
+            {
+                var primary = application.PrimaryPhoto;
+                Report(primary is null
+                    ? "Wallpaper updated."
+                    : $"{primary.Title ?? "Untitled"} - {primary.AuthorName ?? primary.ProviderName}");
+            }
 
-            return true;
+            return application;
         }
         catch (OperationCanceledException)
         {
-            return false;
+            return null;
         }
         catch (Exception ex)
         {
             Log.Error("Applying the wallpaper failed.", ex);
             Report("Something went wrong applying the wallpaper.", isError: true);
-            return false;
+            return null;
         }
+    }
+
+    /// <summary>
+    /// What a re-render puts on each active display: the photo it was last given. A display with none
+    /// yet (nothing applied this session, or one just plugged in) gets one of the photos on screen,
+    /// shared out the way a change does it.
+    /// </summary>
+    private Dictionary<string, PhotoItem> RefreshAssignment()
+    {
+        var monitors = _engine.ActiveMonitors(Settings);
+        var assignment = BuildAssignment(CurrentPhotos, monitors);
+
+        // Only where every display has its own photo. Where one is shared or spanned, the engine takes
+        // the first display's, and an older photo remembered for it would replace what is on screen now.
+        if (Settings.MultiMonitor != MultiMonitorMode.DifferentPerMonitor) return assignment;
+
+        foreach (var monitor in monitors)
+        {
+            if (_photoByMonitor.TryGetValue(monitor.Id, out var photo)) assignment[monitor.Id] = photo;
+        }
+
+        return assignment;
+    }
+
+    private void OnApplied(object? sender, WallpaperApplication application)
+    {
+        foreach (var assignment in application.Assignments) _photoByMonitor[assignment.Monitor.Id] = assignment.Photo;
     }
 
     /// <summary>
@@ -388,7 +560,7 @@ public sealed class RotationService : IDisposable
     private static Dictionary<string, PhotoItem> BuildAssignment(IReadOnlyList<PhotoItem> picks, IReadOnlyList<MonitorInfo> monitors)
     {
         var result = new Dictionary<string, PhotoItem>(StringComparer.OrdinalIgnoreCase);
-        if (monitors.Count == 0) return result;
+        if (monitors.Count == 0 || picks.Count == 0) return result;
 
         if (picks.Count == 1)
         {
@@ -538,8 +710,8 @@ public sealed class RotationService : IDisposable
             }
 
             var monitors = _engine.ActiveMonitors(settings);
-            int targetWidth = monitors.Max(m => m.Width);
-            int targetHeight = monitors.Max(m => m.Height);
+            var (targetWidth, targetHeight, orientation) = SourceRegistry.TargetFor(monitors, settings);
+            var floor = SourceRegistry.FloorFor(monitors, settings);
 
             var buckets = new List<(int Weight, List<PhotoItem> Items)>();
             var problems = new List<string>();
@@ -554,15 +726,17 @@ public sealed class RotationService : IDisposable
                 if (problem is not null) return (selection, Items: (List<PhotoItem>?)null, Problem: problem);
 
                 int page = NextPageFor(selection);
-                var query = SourceRegistry.BuildQuery(selection, settings, page, FetchPageSize, targetWidth, targetHeight);
+                var query = SourceRegistry.BuildQuery(selection, settings, page, FetchPageSize, targetWidth, targetHeight, orientation, floor);
                 var context = _registry.BuildContext(selection, settings, _settingsStore.GetApiKey, targetWidth, targetHeight);
 
                 try
                 {
                     var result = await source.FetchAsync(query, context, ct).ConfigureAwait(false);
 
-                    // A source that has run out of pages starts again from the beginning.
-                    if (!result.HasMore || result.Items.Count == 0) ResetPageFor(selection);
+                    // A source that has run out of pages starts again from the beginning. An empty page
+                    // that still has more after it (every photo on it filtered out, or an APOD search
+                    // window with no hits) is not the end, and the next refill asks for the page after.
+                    if (!result.HasMore) ResetPageFor(selection);
 
                     return (selection, Items: result.Items.ToList(), Problem: result.Notice);
                 }
@@ -570,18 +744,22 @@ public sealed class RotationService : IDisposable
                 {
                     return (selection, Items: (List<PhotoItem>?)null, Problem: ex.Message);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
                 catch (Exception ex)
                 {
+                    // A request that timed out arrives as a cancellation nobody asked for. That is this
+                    // source not responding, and the others' photos are still used.
                     Log.Warn($"Source {source.DisplayName} failed.", ex);
                     return (selection, Items: (List<PhotoItem>?)null, Problem: $"{source.DisplayName} is not responding.");
                 }
             });
 
-            var results = await Task.WhenAll(fetches).ConfigureAwait(false);
+            // Started on the thread pool: each source checks its settings before its first await, and a
+            // local folder on a network share that is not there can block that check for many seconds.
+            var results = await Task.Run(() => Task.WhenAll(fetches)).ConfigureAwait(false);
 
             foreach (var (selection, items, problem) in results)
             {
@@ -759,20 +937,28 @@ public sealed class RotationService : IDisposable
         // Under the queue lock: background refills read the recent set at the same time.
         lock (_queueGate)
         {
+            // The list itself is the entry, which is how ForgetHistory finds it again.
+            _history.Add(picks);
             foreach (var photo in picks)
             {
-                _history.Add(photo);
                 _recentKeys.Add(photo.Key);
                 _recentStamp[photo.Key] = ++_stampCounter;
             }
 
+            // Trimmed by photos rather than changes, so the window means the same with any number of displays.
             int window = Math.Max(50, Settings.NoRepeatWindow);
-            if (_history.Count > window) _history.RemoveRange(0, _history.Count - window);
+            int photos = _history.Sum(entry => entry.Count);
+            while (_history.Count > 1 && photos > window)
+            {
+                photos -= _history[0].Count;
+                _history.RemoveAt(0);
+            }
+
             if (_recentKeys.Count > window * 2)
             {
                 // The set only guards against repeats, so trimming it to the live history is enough.
                 _recentKeys.Clear();
-                foreach (var photo in _history) _recentKeys.Add(photo.Key);
+                foreach (var photo in _history.SelectMany(entry => entry)) _recentKeys.Add(photo.Key);
                 foreach (var key in _recentStamp.Keys.Where(k => !_recentKeys.Contains(k)).ToList()) _recentStamp.Remove(key);
             }
 
@@ -787,14 +973,11 @@ public sealed class RotationService : IDisposable
     /// </summary>
     private void ForgetHistory(IReadOnlyList<PhotoItem> picks)
     {
-        // These exact entries, not the last few: a photo applied from the tray meanwhile may come after them.
+        // This exact entry, not the last one: a photo applied from the tray meanwhile may come after it.
         lock (_queueGate)
         {
-            foreach (var photo in picks)
-            {
-                int index = _history.FindLastIndex(entry => ReferenceEquals(entry, photo));
-                if (index >= 0) _history.RemoveAt(index);
-            }
+            int index = _history.FindLastIndex(entry => ReferenceEquals(entry, picks));
+            if (index >= 0) _history.RemoveAt(index);
 
             _historyPosition = _history.Count - 1;
         }
@@ -836,6 +1019,7 @@ public sealed class RotationService : IDisposable
 
     public void Dispose()
     {
+        _engine.Applied -= OnApplied;
         CancelRefill();
         _refillLock.Dispose();
         _state.Save();

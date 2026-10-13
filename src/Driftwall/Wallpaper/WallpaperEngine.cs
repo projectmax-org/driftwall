@@ -25,6 +25,12 @@ public sealed record WallpaperApplication(IReadOnlyList<MonitorAssignment> Assig
 /// </summary>
 public sealed class WallpaperEngine
 {
+    /// <summary>
+    /// The longest one change may hold the apply lock. Several callers pass no token of their own, and
+    /// a download that stalls mid-way would otherwise hold it for good, so every later change waits.
+    /// </summary>
+    private static readonly TimeSpan ApplyDeadline = TimeSpan.FromMinutes(3);
+
     private readonly ImageCache _cache;
     private readonly SemaphoreSlim _applyLock = new(1, 1);
 
@@ -32,7 +38,8 @@ public sealed class WallpaperEngine
 
     /// <summary>
     /// The last file set through the empty id. Windows does not reliably report it back once the
-    /// displays show different pictures, so the clean-up keeps it from here instead.
+    /// displays show different pictures, so the clean-up keeps it from here instead. Restored from
+    /// <see cref="UnnamedRecordFile"/> at start-up.
     /// </summary>
     private string? _unnamedPath;
     private long _renderSequence;
@@ -44,6 +51,9 @@ public sealed class WallpaperEngine
         // Carry on from the highest render number on disk. Starting again at 1 would reuse a path that
         // may still be on screen from the last run, and Windows can ignore a change to the same path.
         _renderSequence = HighestRenderSequence();
+
+        // The display reached only through the empty id may still show a file from the last run.
+        _unnamedPath = ReadUnnamedRecord();
     }
 
     /// <summary>The most recent successful application, or null if nothing has been set this session.</summary>
@@ -81,21 +91,42 @@ public sealed class WallpaperEngine
         Func<MonitorInfo, PhotoItem?> photoForMonitor, AppSettings settings, CancellationToken ct)
     {
         await _applyLock.WaitAsync(ct).ConfigureAwait(false);
+
+        // From here on the change is bounded whatever the caller passed: see ApplyDeadline.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(ApplyDeadline);
+        var token = deadline.Token;
+
+        int monitorCount = 0;
         try
         {
             var monitors = ActiveMonitors(settings);
+            monitorCount = monitors.Count;
             if (monitors.Count == 0) return null;
 
             var application = settings.MultiMonitor == MultiMonitorMode.SpanAcrossMonitors
-                ? await ApplySpanAsync(photoForMonitor(monitors[0]), monitors, settings, ct).ConfigureAwait(false)
-                : await ApplyPerMonitorAsync(photoForMonitor, monitors, settings, ct).ConfigureAwait(false);
+                ? await ApplySpanAsync(photoForMonitor(monitors[0]), monitors, settings, token).ConfigureAwait(false)
+                : await ApplyPerMonitorAsync(photoForMonitor, monitors, settings, token).ConfigureAwait(false);
 
-            if (application is null || application.Assignments.Count == 0) return null;
+            if (application is null || application.Assignments.Count == 0)
+            {
+                // A change no display took may still have rendered its files. They are swept like any
+                // other old render; what is on screen stays protected, see WallpapersInUse.
+                CleanupRenderDirectory(monitors.Count);
+                return null;
+            }
 
             Current = application;
             Applied?.Invoke(this, application);
             CleanupRenderDirectory(monitors.Count);
             return application;
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // The caller did not cancel, so this is a change that failed rather than one called off.
+            Log.Warn($"Applying the wallpaper took longer than {ApplyDeadline.TotalMinutes:0} minutes, so it was abandoned.");
+            if (monitorCount > 0) CleanupRenderDirectory(monitorCount);
+            return null;
         }
         finally
         {
@@ -148,9 +179,11 @@ public sealed class WallpaperEngine
 
         // A cancelled change never reaches the desktop, even when every render finished.
         ct.ThrowIfCancellationRequested();
-        SetWallpaperFiles(assignments);
-        NotifyProviders(assignments);
-        return new WallpaperApplication(assignments, DateTimeOffset.Now);
+        var applied = SetWallpaperFiles(assignments);
+        if (applied.Count == 0) return null;
+
+        NotifyProviders(applied);
+        return new WallpaperApplication(applied, DateTimeOffset.Now);
     }
 
     private async Task<WallpaperApplication?> ApplySpanAsync(
@@ -175,15 +208,22 @@ public sealed class WallpaperEngine
 
         var assignments = monitors.Select(m => new MonitorAssignment(m, photo, paths[m.Id])).ToList();
         ct.ThrowIfCancellationRequested();
-        SetWallpaperFiles(assignments);
-        NotifyProviders(assignments);
-        return new WallpaperApplication(assignments, DateTimeOffset.Now);
+        var applied = SetWallpaperFiles(assignments);
+        if (applied.Count == 0) return null;
+
+        NotifyProviders(applied);
+        return new WallpaperApplication(applied, DateTimeOffset.Now);
     }
 
     // ---------------- talking to Windows ----------------
 
-    private void SetWallpaperFiles(IReadOnlyList<MonitorAssignment> assignments)
+    /// <summary>
+    /// Hands the files to Windows and returns the assignments it took. A display whose call failed, or
+    /// that had to be left as it was, is not reported as changed.
+    /// </summary>
+    private List<MonitorAssignment> SetWallpaperFiles(IReadOnlyList<MonitorAssignment> assignments)
     {
+        var applied = assignments.ToList();
         IDesktopWallpaper? shell = null;
         try
         {
@@ -197,7 +237,8 @@ public sealed class WallpaperEngine
             // Displays with no shell id at all can only take the single-image legacy API, which covers
             // the whole desktop; calling it once per display would leave only the last one standing.
             var legacy = assignments.Where(a => a.Monitor.ShellId is null).OrderByDescending(a => a.Monitor.IsPrimary).FirstOrDefault();
-            if (legacy is not null) ApplyLegacy(legacy.RenderedPath);
+            if (legacy is not null && !ApplyLegacy(legacy.RenderedPath))
+                applied.RemoveAll(a => a.Monitor.ShellId is null);
 
             // Every display the shell knows by its own id, with the file it should end up showing.
             var targets = assignments
@@ -237,6 +278,7 @@ public sealed class WallpaperEngine
                     {
                         shell.SetWallpaper(string.Empty, unnamed.RenderedPath);
                         _unnamedPath = unnamed.RenderedPath;
+                        RecordUnnamed(unnamed.RenderedPath);
 
                         // Explorer applies an empty-id call a moment after it returns. A display set by
                         // its own id before then is overwritten by it, so wait until it has landed.
@@ -248,9 +290,13 @@ public sealed class WallpaperEngine
                         unnamed = null;
                     }
                 }
+
+                // Left as it was, so not reported as changed.
+                if (unnamed is null) applied.RemoveAll(a => a.Monitor.ShellId == string.Empty);
             }
 
-            SetEach(shell, targets);
+            var failed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            SetEach(shell, targets, failed);
 
             if (unnamed is not null)
             {
@@ -259,7 +305,7 @@ public sealed class WallpaperEngine
                     // It is still on its way. When it lands it covers the displays just set, so wait a
                     // while longer and set them again if it does.
                     Log.Warn("Windows took more than 5 seconds to apply the wallpaper of the display it lists without a device path.");
-                    if (WaitForUnnamedToLand(shell, unnamed.RenderedPath, TimeSpan.FromSeconds(10))) SetEach(shell, targets);
+                    if (WaitForUnnamedToLand(shell, unnamed.RenderedPath, TimeSpan.FromSeconds(10))) SetEach(shell, targets, failed);
                 }
 
                 // A last look: any display still showing something else is set once more.
@@ -267,9 +313,15 @@ public sealed class WallpaperEngine
                 {
                     try
                     {
-                        if (string.Equals(shell.GetWallpaper(id), path, StringComparison.OrdinalIgnoreCase)) continue;
-                        Thread.Sleep(300);
-                        shell.SetWallpaper(id, path);
+                        if (!string.Equals(shell.GetWallpaper(id), path, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // It shows something else, so it has not changed unless this call goes through.
+                            failed.Add(id);
+                            Thread.Sleep(300);
+                            shell.SetWallpaper(id, path);
+                        }
+
+                        failed.Remove(id);
                     }
                     catch (Exception ex)
                     {
@@ -277,28 +329,45 @@ public sealed class WallpaperEngine
                     }
                 }
             }
+
+            applied.RemoveAll(a => !string.IsNullOrEmpty(a.Monitor.ShellId) && failed.Contains(a.Monitor.ShellId));
         }
         catch (Exception ex)
         {
-            // Pre-Windows 8, or a broken shell. One wallpaper for everything is the only option left.
+            // Pre-Windows 8, or a broken shell. One wallpaper for everything is the only option left,
+            // and it either reaches every display or none.
             Log.Warn("IDesktopWallpaper unavailable; falling back to SystemParametersInfo.", ex);
-            if (assignments.Count > 0) ApplyLegacy(assignments[0].RenderedPath);
+            bool reached = assignments.Count > 0 && ApplyLegacy(assignments[0].RenderedPath);
+            applied = reached ? assignments.ToList() : new List<MonitorAssignment>();
         }
         finally
         {
             if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
         }
+
+        return applied;
     }
 
-    /// <summary>Sets each display by its own id; one failing does not stop the rest.</summary>
-    private static void SetEach(IDesktopWallpaper shell, IEnumerable<(string Id, string Path, string Name)> targets)
+    /// <summary>
+    /// Sets each display by its own id; one failing does not stop the rest. <paramref name="failed"/>
+    /// holds each id's latest outcome, so a later attempt that succeeds clears an earlier failure.
+    /// </summary>
+    private static void SetEach(IDesktopWallpaper shell, IEnumerable<(string Id, string Path, string Name)> targets, HashSet<string> failed)
     {
         foreach (var (id, path, name) in targets)
         {
             // Failed HRESULTs arrive as several exception types. Only this display is affected, so the
             // single-image legacy path, which would cover all of them, is not used here.
-            try { shell.SetWallpaper(id, path); }
-            catch (Exception ex) { Log.Warn($"SetWallpaper failed for {name}.", ex); }
+            try
+            {
+                shell.SetWallpaper(id, path);
+                failed.Remove(id);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"SetWallpaper failed for {name}.", ex);
+                failed.Add(id);
+            }
         }
     }
 
@@ -350,7 +419,8 @@ public sealed class WallpaperEngine
         return map;
     }
 
-    private static void ApplyLegacy(string path)
+    /// <summary>Sets one wallpaper for the whole desktop. False when Windows refused it.</summary>
+    private static bool ApplyLegacy(string path)
     {
         try
         {
@@ -363,8 +433,10 @@ public sealed class WallpaperEngine
             Log.Warn("Could not write wallpaper style to the registry.", ex);
         }
 
-        if (!SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, path, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE))
-            Log.Error("SystemParametersInfo(SPI_SETDESKWALLPAPER) failed for " + path);
+        if (SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, path, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)) return true;
+
+        Log.Error("SystemParametersInfo(SPI_SETDESKWALLPAPER) failed for " + path);
+        return false;
     }
 
     /// <summary>Fires any usage pings a provider's terms require (Unsplash in particular).</summary>
@@ -450,7 +522,9 @@ public sealed class WallpaperEngine
                 inUse.Add(Path.GetFullPath(assignment.RenderedPath));
         }
 
-        if (_unnamedPath is not null) inUse.Add(Path.GetFullPath(_unnamedPath));
+        // Only while a display is still reached through the empty id: once Windows lists it by its own
+        // path again, that old render is just another file to sweep.
+        if (_unnamedPath is not null && Monitors.Any(m => m.ShellId == string.Empty)) inUse.Add(Path.GetFullPath(_unnamedPath));
 
         IDesktopWallpaper? shell = null;
         try
@@ -504,6 +578,41 @@ public sealed class WallpaperEngine
         }
 
         return highest;
+    }
+
+    /// <summary>
+    /// Where the last file set through the empty id is remembered between runs. Windows does not report
+    /// it back, so after a restart nothing else would keep the clean-up away from it. The clean-up only
+    /// deletes images and half-written files, so this one stays.
+    /// </summary>
+    private static string UnnamedRecordFile => Path.Combine(Paths.RenderDirectory, "unnamed-display.txt");
+
+    private static string? ReadUnnamedRecord()
+    {
+        try
+        {
+            if (!File.Exists(UnnamedRecordFile)) return null;
+
+            var path = File.ReadAllText(UnnamedRecordFile).Trim();
+            return path.Length > 0 && File.Exists(path) ? path : null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not read which file the display without a device path shows.", ex);
+            return null;
+        }
+    }
+
+    private static void RecordUnnamed(string path)
+    {
+        try
+        {
+            File.WriteAllText(UnnamedRecordFile, path);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not record which file the display without a device path shows.", ex);
+        }
     }
 
     public static Color ParseColor(string value)

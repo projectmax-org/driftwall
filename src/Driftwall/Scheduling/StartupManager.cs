@@ -16,6 +16,10 @@ public static class StartupManager
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "Driftwall";
 
+    // Where Task Manager and Settings > Apps > Startup record that the user turned an entry off. The
+    // Run value itself stays; a binary value of the same name here says whether Windows may start it.
+    private const string ApprovedKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
     /// <summary>Path to the running executable, quoted and with the start-minimised switch.</summary>
     private static string CommandLine
     {
@@ -29,6 +33,29 @@ public static class StartupManager
     }
 
     public static bool IsEnabled()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+            if (key?.GetValue(ValueName) is not string value || value.Length == 0) return false;
+
+            // An odd first byte (03, 07) is a disable made in Task Manager: Windows skips the entry at
+            // sign-in. No value at all, or an even first byte, means it runs.
+            using var approved = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath);
+            return approved?.GetValue(ValueName) is not byte[] { Length: > 0 } flag || (flag[0] & 1) == 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not read the startup registry key.", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True when there is a startup entry at all, switched off in Task Manager or not. Code that only
+    /// makes sure an entry exists asks this, so it never undoes a switch-off the user made there.
+    /// </summary>
+    public static bool HasEntry()
     {
         try
         {
@@ -67,12 +94,29 @@ public static class StartupManager
                 key.DeleteValue(ValueName, throwOnMissingValue: false);
             }
 
+            // Switched on here, the entry must really run, whatever Task Manager was told before.
+            // Switched off, no old disable should be left waiting for the next time it is turned on.
+            ClearStartupApproval();
             return true;
         }
         catch (Exception ex)
         {
             Log.Error("Could not update the startup registry key.", ex);
             return false;
+        }
+    }
+
+    /// <summary>Forgets a disable recorded by Task Manager. With no value there, Windows starts the entry.</summary>
+    private static void ClearStartupApproval()
+    {
+        try
+        {
+            using var approved = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath, writable: true);
+            approved?.DeleteValue(ValueName, throwOnMissingValue: false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not clear the Task Manager startup setting.", ex);
         }
     }
 
@@ -84,12 +128,12 @@ public static class StartupManager
     /// </summary>
     public static void RepairIfNeeded()
     {
-        if (!IsEnabled()) return;
-
         try
         {
+            // An entry turned off in Task Manager is re-pointed too, and stays off: the disable is
+            // kept by name, so turning it back on there then starts a program that exists.
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-            if (key?.GetValue(ValueName) is not string existing) return;
+            if (key?.GetValue(ValueName) is not string existing || existing.Length == 0) return;
 
             var expected = CommandLine;
             if (!string.IsNullOrEmpty(expected) && !string.Equals(existing, expected, StringComparison.OrdinalIgnoreCase) &&

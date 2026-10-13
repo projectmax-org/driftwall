@@ -74,7 +74,8 @@ public static class TrayMenu
 
             bool hasPhoto = viewModel.CurrentPhoto is not null;
             saveCurrent.IsEnabled = hasPhoto;
-            viewSource.IsEnabled = viewModel.CurrentPhoto?.SourcePageUrl is { Length: > 0 };
+            // Local photos saved by older versions carry their folder here, which has nothing to open online.
+            viewSource.IsEnabled = Shell.IsWebUrl(viewModel.CurrentPhoto?.SourcePageUrl);
 
             RebuildCollections(collections, services, viewModel);
         };

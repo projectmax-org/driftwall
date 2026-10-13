@@ -1,3 +1,6 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
+
 namespace Driftwall.Core;
 
 /// <summary>
@@ -31,8 +34,24 @@ public sealed class SingleInstance : IDisposable
 
     public static SingleInstance Acquire()
     {
-        var mutex = new Mutex(initiallyOwned: true, MutexName, out bool createdNew);
-        var signal = new EventWaitHandle(false, EventResetMode.AutoReset, SignalName);
+        // The mutex and the event are this user's, elevated or not. Left to the default, a copy run as
+        // administrator would make them open to administrators alone, and a normal launch beside it
+        // could then neither find it nor wake it. Nobody else is given anything.
+        MutexSecurity? mutexSecurity = null;
+        EventWaitHandleSecurity? signalSecurity = null;
+        using (var identity = WindowsIdentity.GetCurrent())
+        {
+            if (identity.User is { } user)
+            {
+                mutexSecurity = new MutexSecurity();
+                mutexSecurity.AddAccessRule(new MutexAccessRule(user, MutexRights.FullControl, AccessControlType.Allow));
+                signalSecurity = new EventWaitHandleSecurity();
+                signalSecurity.AddAccessRule(new EventWaitHandleAccessRule(user, EventWaitHandleRights.FullControl, AccessControlType.Allow));
+            }
+        }
+
+        var mutex = MutexAcl.Create(initiallyOwned: true, MutexName, out bool createdNew, mutexSecurity);
+        var signal = EventWaitHandleAcl.Create(false, EventResetMode.AutoReset, SignalName, out _, signalSecurity);
         return new SingleInstance(mutex, signal, createdNew);
     }
 

@@ -32,7 +32,7 @@ public sealed class FlickrSource : PhotoSourceBase
     private const int MaxTags = 20;
 
     /// <summary>Licence ids that allow reuse. Options["license"] overrides; "all" disables the filter.</summary>
-    private const string ReusableLicenses = "1,2,3,4,5,6,7,8,9,10";
+    private const string ReusableLicenses = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16";
 
     // url_h, url_k and url_3k..url_6k are absent from Flickr's published extras list but are honoured
     // by the live API. Unknown extras are ignored rather than rejected, so this degrades safely to the
@@ -86,6 +86,13 @@ public sealed class FlickrSource : PhotoSourceBase
         [8] = "United States Government Work",
         [9] = "Public Domain Dedication (CC0)",
         [10] = "Public Domain Mark",
+        // The Creative Commons 4.0 licences, listed after the older 2.0 set.
+        [11] = "CC BY 4.0",
+        [12] = "CC BY-SA 4.0",
+        [13] = "CC BY-ND 4.0",
+        [14] = "CC BY-NC 4.0",
+        [15] = "CC BY-NC-SA 4.0",
+        [16] = "CC BY-NC-ND 4.0",
     };
 
     public override string Id => "flickr";
@@ -107,6 +114,7 @@ public sealed class FlickrSource : PhotoSourceBase
 
         var call = BuildCall(query, context, apiKey);
         var fullWidth = Math.Max(context.TargetWidth, MinFullWidth);
+        var fullHeight = context.TargetHeight;
         var page = call.Page;
         var retried = false;
 
@@ -130,7 +138,7 @@ public sealed class FlickrSource : PhotoSourceBase
                     continue;
                 }
 
-                var items = Parse(photos, query, call.Licenses, fullWidth);
+                var items = Parse(photos, query, call.Licenses, fullWidth, fullHeight);
                 var hasMore = call.HasMore ?? IntOf(photos, "page") < pageCount;
                 return items.Count == 0 && !hasMore ? PhotoPage.Empty : new PhotoPage(items, hasMore);
             }
@@ -241,7 +249,7 @@ public sealed class FlickrSource : PhotoSourceBase
         .Append("&format=json&nojsoncallback=1&extras=").Append(Extras)
         .Append("&per_page=").Append(perPage);
 
-    private List<PhotoItem> Parse(JsonElement photos, SourceQuery query, HashSet<int>? licenses, int fullWidth)
+    private List<PhotoItem> Parse(JsonElement photos, SourceQuery query, HashSet<int>? licenses, int fullWidth, int fullHeight)
     {
         var items = new List<PhotoItem>();
         if (!photos.TryGetProperty("photo", out var array) || array.ValueKind != JsonValueKind.Array)
@@ -260,7 +268,9 @@ public sealed class FlickrSource : PhotoSourceBase
             var sizes = ReadSizes(photo);
             if (sizes.Count == 0) continue;
 
-            var full = Pick(sizes, fullWidth);
+            // Flickr scales each size to a longest edge, so for a panorama the first size wide enough
+            // for the display can still be too short for it: the file has to cover it both ways.
+            var full = Pick(sizes, fullWidth, fullHeight);
             if (full.Width < query.MinWidth || full.Height < query.MinHeight) continue;
 
             var owner = StringOf(photo, "owner");
@@ -321,11 +331,14 @@ public sealed class FlickrSource : PhotoSourceBase
         return sizes;
     }
 
-    /// <summary>Smallest size at least <paramref name="minWidth"/> across, or the largest on offer.</summary>
-    private static PhotoSize Pick(List<PhotoSize> sizes, int minWidth)
+    /// <summary>
+    /// Smallest size at least <paramref name="minWidth"/> across and <paramref name="minHeight"/> tall,
+    /// or the largest on offer.
+    /// </summary>
+    private static PhotoSize Pick(List<PhotoSize> sizes, int minWidth, int minHeight = 0)
     {
         foreach (var size in sizes)
-            if (size.Width >= minWidth) return size;
+            if (size.Width >= minWidth && size.Height >= minHeight) return size;
         return sizes[^1];
     }
 

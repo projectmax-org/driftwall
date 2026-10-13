@@ -219,9 +219,14 @@ public sealed partial class RssSource : PhotoSourceBase
             // XDocument.Parse rejects DTDs by default, which is what we want for third-party XML.
             return new FeedResult(url, XDocument.Parse(xml.TrimStart('﻿', ' ', '\t', '\r', '\n')), null);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // A timeout, not the caller giving up: one slow feed must not cost the others theirs.
+            return new FeedResult(url, null, new SourceException($"{url.Host} did not respond in time.", inner: ex));
         }
         catch (SourceException ex)
         {

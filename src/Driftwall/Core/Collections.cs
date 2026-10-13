@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -19,11 +20,26 @@ public sealed class CollectionEntry
 }
 
 /// <summary>A named group of saved photos, selectable as a wallpaper source.</summary>
-public sealed class PhotoCollection
+/// <remarks>
+/// The UI binds to these objects directly, so a new name or photo count is announced rather than
+/// left for the lists to find on their next redraw.
+/// </remarks>
+public sealed class PhotoCollection : INotifyPropertyChanged
 {
+    private string _name = "New collection";
+
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..12];
 
-    public string Name { get; set; } = "New collection";
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            if (_name == value) return;
+            _name = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+        }
+    }
 
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.Now;
 
@@ -31,6 +47,11 @@ public sealed class PhotoCollection
 
     [JsonIgnore]
     public int Count => Entries.Count;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>Called by the store after it adds or removes an entry.</summary>
+    internal void CountChanged() => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Count)));
 }
 
 /// <summary>
@@ -43,11 +64,17 @@ public sealed class PhotoCollection
 public sealed class CollectionsStore : IDisposable
 {
     private static readonly TimeSpan SaveDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(30);
 
     private readonly Lock _gate = new();
+    private readonly Lock _saveGate = new();
     private readonly Timer _saveTimer;
     private readonly HashSet<string> _savedKeys = new(StringComparer.Ordinal);
     private bool _dirty;
+    private bool _disposed;
+
+    /// <summary>Set when the file on disk could not be read or moved aside, so it must not be written over.</summary>
+    private bool _saveBlocked;
 
     public CollectionsStore()
     {
@@ -56,7 +83,10 @@ public sealed class CollectionsStore : IDisposable
         _saveTimer = new Timer(_ => FlushIfDirty(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
-    /// <summary>Bound directly by the UI, so it is only ever mutated on the UI thread.</summary>
+    /// <summary>
+    /// Bound directly by the UI, so it is only ever mutated on the UI thread. The rotation reads it
+    /// from pool threads, so the store changes it, and its entry lists, only under the lock.
+    /// </summary>
     public ObservableCollection<PhotoCollection> Collections { get; }
 
     public event EventHandler? CollectionsChanged;
@@ -73,13 +103,22 @@ public sealed class CollectionsStore : IDisposable
         return collection is not null && collection.Entries.Any(e => e.Key == photo.Key);
     }
 
-    public PhotoCollection? Find(string? id) =>
-        id is null ? null : Collections.FirstOrDefault(c => c.Id == id);
+    public PhotoCollection? Find(string? id)
+    {
+        if (id is null) return null;
+        lock (_gate) return Collections.FirstOrDefault(c => c.Id == id);
+    }
+
+    /// <summary>The first collection with anything in it, for a source that names none.</summary>
+    public PhotoCollection? FirstWithPhotos()
+    {
+        lock (_gate) return Collections.FirstOrDefault(c => c.Count > 0);
+    }
 
     public PhotoCollection Create(string name)
     {
         var collection = new PhotoCollection { Name = string.IsNullOrWhiteSpace(name) ? "New collection" : name.Trim() };
-        Collections.Add(collection);
+        lock (_gate) Collections.Add(collection);
         MarkDirty();
         return collection;
     }
@@ -97,7 +136,7 @@ public sealed class CollectionsStore : IDisposable
         var collection = Find(id);
         if (collection is null) return;
 
-        Collections.Remove(collection);
+        lock (_gate) Collections.Remove(collection);
         RebuildKeyIndex();
         MarkDirty();
     }
@@ -109,8 +148,13 @@ public sealed class CollectionsStore : IDisposable
         if (collection is null) return false;
         if (collection.Entries.Any(e => e.Key == photo.Key)) return false;
 
-        collection.Entries.Insert(0, new CollectionEntry { Photo = photo, SavedPath = savedPath });
-        lock (_gate) _savedKeys.Add(photo.Key);
+        lock (_gate)
+        {
+            collection.Entries.Insert(0, new CollectionEntry { Photo = photo, SavedPath = savedPath });
+            _savedKeys.Add(photo.Key);
+        }
+
+        collection.CountChanged();
         MarkDirty();
         return true;
     }
@@ -121,7 +165,8 @@ public sealed class CollectionsStore : IDisposable
         var entry = collection?.Entries.FirstOrDefault(e => e.Key == photoKey);
         if (collection is null || entry is null) return false;
 
-        collection.Entries.Remove(entry);
+        lock (_gate) collection.Entries.Remove(entry);
+        collection.CountChanged();
         RebuildKeyIndex();
         MarkDirty();
         return true;
@@ -133,9 +178,9 @@ public sealed class CollectionsStore : IDisposable
         var entry = Find(collectionId)?.Entries.FirstOrDefault(e => e.Key == photoKey);
         if (entry is null) return;
 
+        // The photo itself keeps its own LocalPath (none for a web photo): PhotosIn points it at the
+        // saved copy while that exists, and the original stays as the way back if it ever goes.
         entry.SavedPath = savedPath;
-        // The saved copy outlives the cache, so point the item at it for future wallpaper renders.
-        entry.Photo = entry.Photo with { LocalPath = savedPath };
         MarkDirty();
     }
 
@@ -145,11 +190,24 @@ public sealed class CollectionsStore : IDisposable
         var collection = Find(collectionId);
         if (collection is null) return Array.Empty<PhotoItem>();
 
-        return collection.Entries
-            .Select(e => e.SavedPath is not null && File.Exists(e.SavedPath)
-                ? e.Photo with { LocalPath = e.SavedPath }
-                : e.Photo)
-            .ToList();
+        // The rotation calls this from a pool thread while the user may be adding or removing
+        // photos, so copy the list under the lock and do the slow file checks on the copy.
+        CollectionEntry[] entries;
+        lock (_gate) entries = collection.Entries.ToArray();
+
+        return entries.Select(PhotoFor).ToList();
+    }
+
+    private static PhotoItem PhotoFor(CollectionEntry entry)
+    {
+        if (entry.SavedPath is null) return entry.Photo;
+        if (File.Exists(entry.SavedPath)) return entry.Photo with { LocalPath = entry.SavedPath };
+
+        // Earlier versions also wrote the saved path into the photo, which left it pointing at the
+        // missing file for good. Without it, a web photo downloads again from its URL.
+        return string.Equals(entry.Photo.LocalPath, entry.SavedPath, StringComparison.OrdinalIgnoreCase)
+            ? entry.Photo with { LocalPath = null }
+            : entry.Photo;
     }
 
     private void RebuildKeyIndex()
@@ -174,7 +232,7 @@ public sealed class CollectionsStore : IDisposable
         CollectionsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private static List<PhotoCollection> Load()
+    private List<PhotoCollection> Load()
     {
         try
         {
@@ -186,8 +244,41 @@ public sealed class CollectionsStore : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Error("Collections file could not be read; starting with an empty set.", ex);
+            // That file may be the only record of every collection the user built, so the empty set
+            // below must never be saved over it. A file that would not parse is moved aside and kept.
+            // One that could not be opened is most likely fine and only busy (a virus scanner, a
+            // backup), so it is left where it is for the next start and nothing is saved until then.
+            bool couldNotOpen = ex is IOException or UnauthorizedAccessException;
+            if (!couldNotOpen && TryBackupUnreadableFile())
+            {
+                Log.Error("Collections file could not be read; it has been backed up and a new set started.", ex);
+            }
+            else
+            {
+                _saveBlocked = File.Exists(Paths.CollectionsFile);
+                Log.Error("Collections file could not be read; it has been left as it was and collections will not be saved until the next start.", ex);
+            }
+
             return DefaultCollections();
+        }
+    }
+
+    private static bool TryBackupUnreadableFile()
+    {
+        try
+        {
+            if (!File.Exists(Paths.CollectionsFile)) return true;
+
+            // Unlike settings, an earlier backup is kept: it may be the only copy of the user's collections.
+            var backup = Paths.CollectionsFile + ".corrupt";
+            if (File.Exists(backup)) backup = Paths.CollectionsFile + $".{DateTime.Now:yyyyMMdd-HHmmss}.corrupt";
+            File.Move(Paths.CollectionsFile, backup);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Could not back up the unreadable collections file.", ex);
+            return false;
         }
     }
 
@@ -202,32 +293,70 @@ public sealed class CollectionsStore : IDisposable
             _dirty = false;
         }
 
-        Save();
+        if (!TrySave()) RetryLater();
     }
 
-    public void Save()
+    /// <summary>
+    /// A save that failed (the file held open by a virus scanner, say) is tried again, rather than
+    /// waiting for the next change or the save on exit.
+    /// </summary>
+    private void RetryLater()
     {
-        List<PhotoCollection> snapshot;
-        lock (_gate) snapshot = Collections.ToList();
-
-        try
+        lock (_gate)
         {
-            var json = JsonSerializer.Serialize(snapshot, DriftwallJson.Options);
-            var temp = Paths.CollectionsFile + ".tmp";
-            File.WriteAllText(temp, json);
-
-            if (File.Exists(Paths.CollectionsFile)) File.Replace(temp, Paths.CollectionsFile, null);
-            else File.Move(temp, Paths.CollectionsFile);
+            if (_disposed) return;
+            _dirty = true;
+            _saveTimer.Change(RetryDelay, Timeout.InfiniteTimeSpan);
         }
-        catch (Exception ex)
+    }
+
+    public void Save() => TrySave();
+
+    /// <summary>Returns false only when the write failed and is worth trying again.</summary>
+    private bool TrySave()
+    {
+        if (_saveBlocked)
         {
-            Log.Error("Could not save collections.", ex);
+            Log.Warn("Collections not saved: the file on disk could not be read at start-up, so it is left as it was.");
+            return true;
+        }
+
+        // The timer and a save on exit or sign-out can arrive together; one at a time, so they do not
+        // fight over the temporary file and the later one writes the later snapshot.
+        lock (_saveGate)
+        {
+            // Copied under the lock, entries included, so a heart clicked mid-save cannot change a
+            // list while the serialiser walks it.
+            List<PhotoCollection> snapshot;
+            lock (_gate)
+            {
+                snapshot = Collections
+                    .Select(c => new PhotoCollection { Id = c.Id, Name = c.Name, CreatedAt = c.CreatedAt, Entries = c.Entries.ToList() })
+                    .ToList();
+            }
+
+            try
+            {
+                var json = JsonSerializer.Serialize(snapshot, DriftwallJson.Options);
+                var temp = Paths.CollectionsFile + ".tmp";
+                DriftwallJson.WriteDurably(temp, json);
+
+                if (File.Exists(Paths.CollectionsFile)) File.Replace(temp, Paths.CollectionsFile, null);
+                else File.Move(temp, Paths.CollectionsFile);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Could not save collections.", ex);
+                return false;
+            }
         }
     }
 
     public void Dispose()
     {
         FlushIfDirty();
+        lock (_gate) _disposed = true;
         _saveTimer.Dispose();
     }
 }

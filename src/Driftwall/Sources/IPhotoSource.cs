@@ -15,7 +15,10 @@ public sealed class SourceContext
 
     public required AppSettings Settings { get; init; }
 
-    /// <summary>Widest monitor in pixels — sources use it to request an appropriately sized image.</summary>
+    /// <summary>
+    /// Widest monitor in pixels, or the whole desktop when one photo spans every display — sources
+    /// use it to request an appropriately sized image.
+    /// </summary>
     public int TargetWidth { get; init; } = 1920;
 
     public int TargetHeight { get; init; } = 1080;

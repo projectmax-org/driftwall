@@ -8,7 +8,9 @@ namespace Driftwall.Sources;
 /// This is what closes the loop on browsing: a photo found through any other source can be kept and
 /// then used as a wallpaper source in its own right, with no network access at all.
 /// </para>
-/// The collection to read is <c>Options["collectionId"]</c>.
+/// The collection to read is the selection's <c>Category</c>, which is what the pickers in Browse and
+/// Settings change. <c>Options["collectionId"]</c> is only a fallback: Browse copies the options of a
+/// configured source, so a stale id there must never win over what the user picked.
 /// </summary>
 public sealed class CollectionSource : PhotoSourceBase
 {
@@ -65,14 +67,21 @@ public sealed class CollectionSource : PhotoSourceBase
                 p.Tags.Any(t => Contains(t, keyword)));
         }
 
+        var all = photos.ToList();
+
         if (query.Mode == QueryMode.Random)
         {
-            // Seeded on the page so paging through a shuffled collection stays coherent.
-            var random = new Random(query.Page * 7919);
-            photos = photos.OrderBy(_ => random.Next());
+            // One permutation of the whole collection, sliced by page. Seeding on the page instead
+            // gave every page its own shuffle, so pages overlapped and some photos were never served.
+            // This stays stable across restarts and reshuffles only when the collection changes size.
+            var random = new Random(SeedFor(id, all.Count));
+            for (int i = all.Count - 1; i > 0; i--)
+            {
+                int j = random.Next(i + 1);
+                (all[i], all[j]) = (all[j], all[i]);
+            }
         }
 
-        var all = photos.ToList();
         int skip = Math.Max(0, (query.Page - 1) * query.PageSize);
         var page = all.Skip(skip).Take(query.PageSize).ToList();
 
@@ -81,14 +90,26 @@ public sealed class CollectionSource : PhotoSourceBase
 
     private string? ResolveCollectionId(SourceContext context)
     {
-        if (context.Selection.Options.TryGetValue(CollectionIdOption, out var fromOptions) && !string.IsNullOrWhiteSpace(fromOptions))
-            return fromOptions;
-
         if (!string.IsNullOrWhiteSpace(context.Selection.Category))
             return context.Selection.Category;
 
+        if (context.Selection.Options.TryGetValue(CollectionIdOption, out var fromOptions) && !string.IsNullOrWhiteSpace(fromOptions))
+            return fromOptions;
+
         // Fall back to the first collection that actually has something in it.
-        return _collections.Collections.FirstOrDefault(c => c.Count > 0)?.Id;
+        return _collections.FirstWithPhotos()?.Id;
+    }
+
+    private static int SeedFor(string collectionId, int count)
+    {
+        // Hand-rolled because string.GetHashCode is randomised per process and the seed has to
+        // survive a restart.
+        unchecked
+        {
+            int seed = 17;
+            foreach (char c in collectionId) seed = (seed * 31) + c;
+            return (seed * 31) + count;
+        }
     }
 
     private static bool Contains(string? haystack, string needle) =>

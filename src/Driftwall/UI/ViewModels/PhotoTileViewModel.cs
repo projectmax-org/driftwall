@@ -131,9 +131,13 @@ public sealed class PhotoTileViewModel : ViewModelBase
     {
         try
         {
+            // Read through a stream, not a Uri: a Uri decodes %XX in the path, so a local file named
+            // like "Z%C3%BCrich.jpg" would be looked for under the wrong name. OnLoad reads it all
+            // before the stream closes.
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             var image = new BitmapImage();
             image.BeginInit();
-            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.StreamSource = stream;
             image.CacheOption = BitmapCacheOption.OnLoad;
             image.DecodePixelWidth = ThumbnailWidth;
             image.EndInit();

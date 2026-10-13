@@ -1,4 +1,5 @@
 using Driftwall.Core;
+using Driftwall.Wallpaper;
 
 namespace Driftwall.Sources;
 
@@ -52,14 +53,65 @@ public sealed class SourceRegistry
         }
     }
 
-    /// <summary>Builds the query a selection describes, sized for the largest monitor in play.</summary>
-    public static SourceQuery BuildQuery(SourceSelection selection, AppSettings settings, int page, int pageSize, int targetWidth, int targetHeight)
+    /// <summary>
+    /// The size and shape photos are fetched for. A photo spanning the desktop has to cover the whole
+    /// span, so it is sized for that; otherwise for the largest display. Displays of mixed shapes that
+    /// each get their own photo ask for either orientation, so a portrait display can be given a
+    /// portrait photo and a landscape one a landscape photo.
+    /// </summary>
+    public static (int Width, int Height, PhotoOrientation Orientation) TargetFor(IReadOnlyList<MonitorInfo> monitors, AppSettings settings)
+    {
+        int width, height;
+        if (settings.MultiMonitor == MultiMonitorMode.SpanAcrossMonitors)
+        {
+            width = monitors.Max(m => m.X + m.Width) - monitors.Min(m => m.X);
+            height = monitors.Max(m => m.Y + m.Height) - monitors.Min(m => m.Y);
+        }
+        else
+        {
+            width = monitors.Max(m => m.Width);
+            height = monitors.Max(m => m.Height);
+
+            if (settings.MultiMonitor == MultiMonitorMode.DifferentPerMonitor
+                && monitors.Any(m => m.Width >= m.Height) && monitors.Any(m => m.Width < m.Height))
+                return (width, height, PhotoOrientation.Any);
+        }
+
+        return (width, height, width >= height ? PhotoOrientation.Landscape : PhotoOrientation.Portrait);
+    }
+
+    /// <summary>
+    /// The size a photo must reach to be worth fetching. Usually the target itself; where landscape and
+    /// portrait displays each get their own photo, the widest by tallest of all of them would turn
+    /// away the photos for both shapes, so each shape only has to fit the smaller of the two.
+    /// Whether a photo is too small for the display it actually goes to is checked once it is downloaded.
+    /// </summary>
+    public static (int Width, int Height) FloorFor(IReadOnlyList<MonitorInfo> monitors, AppSettings settings)
+    {
+        var (width, height, orientation) = TargetFor(monitors, settings);
+        if (orientation != PhotoOrientation.Any || settings.MultiMonitor != MultiMonitorMode.DifferentPerMonitor)
+            return (width, height);
+
+        var landscape = monitors.Where(m => m.Width >= m.Height).ToList();
+        var portrait = monitors.Where(m => m.Width < m.Height).ToList();
+        return (Math.Min(landscape.Max(m => m.Width), portrait.Max(m => m.Width)),
+                Math.Min(landscape.Max(m => m.Height), portrait.Max(m => m.Height)));
+    }
+
+    /// <summary>
+    /// Builds the query a selection describes, sized for the target given. Without an
+    /// <paramref name="orientation"/> it follows the target's shape; without a floor, the smallest
+    /// size it asks for follows the target too.
+    /// </summary>
+    public static SourceQuery BuildQuery(
+        SourceSelection selection, AppSettings settings, int page, int pageSize, int targetWidth, int targetHeight,
+        PhotoOrientation? orientation = null, (int Width, int Height)? floor = null)
     {
         int minWidth = 0, minHeight = 0;
         if (settings.RejectLowResolution)
         {
-            minWidth = (int)(targetWidth * settings.MinResolutionRatio);
-            minHeight = (int)(targetHeight * settings.MinResolutionRatio);
+            minWidth = (int)((floor?.Width ?? targetWidth) * settings.MinResolutionRatio);
+            minHeight = (int)((floor?.Height ?? targetHeight) * settings.MinResolutionRatio);
         }
 
         return new SourceQuery
@@ -68,7 +120,7 @@ public sealed class SourceRegistry
             Keyword = selection.Keyword,
             Category = selection.Category,
             TimeRange = selection.TimeRange,
-            Orientation = targetWidth >= targetHeight ? PhotoOrientation.Landscape : PhotoOrientation.Portrait,
+            Orientation = orientation ?? (targetWidth >= targetHeight ? PhotoOrientation.Landscape : PhotoOrientation.Portrait),
             MinWidth = minWidth,
             MinHeight = minHeight,
             SafeSearch = true,

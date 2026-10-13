@@ -85,6 +85,7 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
             if (value == AppSection.Displays) Displays.Refresh();
             if (value == AppSection.Settings)
             {
+                Settings.RefreshSources();
                 Settings.RefreshCacheSize();
                 Settings.RefreshUpdateStatus();
             }
@@ -243,11 +244,23 @@ public sealed class MainViewModel : ViewModelBase, IDisposable
     /// <summary>Called when the window is hidden or minimised.</summary>
     public void StopCountdown() => _countdown.Stop();
 
+    private const string FindingNextStatus = "Finding the next photo...";
+
     private async Task NextAsync()
     {
-        StatusMessage = "Finding the next photo...";
+        StatusMessage = FindingNextStatus;
         StatusIsError = false;
-        await _services.Scheduler.ChangeAsync(force: true).ConfigureAwait(true);
+        bool changed = await _services.Scheduler.ChangeAsync(force: true).ConfigureAwait(true);
+
+        // Most outcomes arrive through the rotation status, which reaches this thread before the
+        // await above resumes. A timeout or an exception reports nothing, and without this the
+        // status bar would go on saying it is looking. A change already under way when Next was
+        // pressed is left to report its own result.
+        if (!changed && StatusMessage == FindingNextStatus && !_services.Scheduler.IsChanging)
+        {
+            StatusMessage = "Could not change the wallpaper. See the log for details.";
+            StatusIsError = true;
+        }
     }
 
     private void TogglePause()

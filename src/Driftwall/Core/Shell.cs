@@ -5,15 +5,18 @@ namespace Driftwall.Core;
 /// <summary>Small wrappers around shell operations, each one non-throwing.</summary>
 public static class Shell
 {
+    /// <summary>True for an absolute http(s) URL: the only kind <see cref="OpenUrl"/> opens.</summary>
+    public static bool IsWebUrl(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
     /// <summary>Opens a URL in the default browser. Ignores anything that is not http(s).</summary>
     public static void OpenUrl(string? url)
     {
-        if (string.IsNullOrWhiteSpace(url)) return;
-
         // Only http(s) is launched: photo metadata comes from the network, and handing an arbitrary
         // scheme to ShellExecute would let a provider choose what runs on the user's machine.
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return;
-        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return;
+        if (!IsWebUrl(url)) return;
+        var uri = new Uri(url!, UriKind.Absolute);
 
         try
         {

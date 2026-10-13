@@ -79,6 +79,9 @@ jobs:
         with:
           name: Driftwall ${{ github.ref_name }}
           generate_release_notes: true
+          # A tag such as v1.1.0-beta is a pre-release, never the latest release the in-app updater
+          # reads; installed copies keep updating to the last stable one.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/DriftwallSetup-*.exe
             dist/Driftwall.exe

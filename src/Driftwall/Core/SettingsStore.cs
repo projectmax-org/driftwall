@@ -14,10 +14,13 @@ namespace Driftwall.Core;
 public sealed class SettingsStore : IDisposable
 {
     private static readonly TimeSpan SaveDelay = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(30);
 
     private readonly Lock _gate = new();
+    private readonly Lock _saveGate = new();
     private readonly Timer _saveTimer;
     private bool _dirty;
+    private bool _disposed;
 
     public SettingsStore()
     {
@@ -109,7 +112,21 @@ public sealed class SettingsStore : IDisposable
             source.Options ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        settings.SchemaVersion = 1;
+        // Up to 1.0.4 a collection source followed the collection id in its options over its category.
+        // Browse's "Add as wallpaper source" stored the first collection, hidden outside Categories, as
+        // the category beside the id it copied, and the id's collection is what rotated. The category
+        // comes first now, so outside Categories it is set to the id, keeping the same photos coming.
+        if (settings.SchemaVersion < 2)
+        {
+            foreach (var source in settings.Sources)
+            {
+                if (!string.Equals(source.ProviderId, "collection", StringComparison.OrdinalIgnoreCase) || source.Mode == QueryMode.Category) continue;
+                if (source.Options.TryGetValue(Driftwall.Sources.CollectionSource.CollectionIdOption, out var id) && !string.IsNullOrWhiteSpace(id))
+                    source.Category = id;
+            }
+        }
+
+        settings.SchemaVersion = 2;
     }
 
     private static void TryBackupCorruptFile()
@@ -135,28 +152,63 @@ public sealed class SettingsStore : IDisposable
             _dirty = false;
         }
 
-        Save();
+        if (!TrySave()) RetryLater();
     }
 
-    /// <summary>Writes settings immediately. Called on shutdown and after important changes.</summary>
-    public void Save()
+    /// <summary>
+    /// A save that failed (the file held open by a virus scanner, say) is tried again, rather than
+    /// waiting for the next change or the save on exit.
+    /// </summary>
+    private void RetryLater()
     {
         lock (_gate)
         {
+            if (_disposed) return;
+            _dirty = true;
+            _saveTimer.Change(RetryDelay, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    /// <summary>Writes settings immediately. Called on shutdown and after important changes.</summary>
+    public void Save() => TrySave();
+
+    private bool TrySave()
+    {
+        // One save at a time, but the settings themselves are locked only while they are copied out:
+        // the write waits for the disk, and a busy disk must not freeze the UI's next Update or Touch.
+        lock (_saveGate)
+        {
+            string json;
+            lock (_gate)
+            {
+                try
+                {
+                    json = JsonSerializer.Serialize(Settings, DriftwallJson.Options);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("Could not save settings.", ex);
+                    return false;
+                }
+
+                // A change made while the file is written sets this again, and its own save follows.
+                _dirty = false;
+            }
+
             try
             {
-                var json = JsonSerializer.Serialize(Settings, DriftwallJson.Options);
                 var temp = Paths.SettingsFile + ".tmp";
-                File.WriteAllText(temp, json);
+                DriftwallJson.WriteDurably(temp, json);
 
                 if (File.Exists(Paths.SettingsFile)) File.Replace(temp, Paths.SettingsFile, null);
                 else File.Move(temp, Paths.SettingsFile);
-
-                _dirty = false;
+                return true;
             }
             catch (Exception ex)
             {
                 Log.Error("Could not save settings.", ex);
+                lock (_gate) _dirty = true;
+                return false;
             }
         }
     }
@@ -164,6 +216,7 @@ public sealed class SettingsStore : IDisposable
     public void Dispose()
     {
         FlushIfDirty();
+        lock (_gate) _disposed = true;
         _saveTimer.Dispose();
     }
 }

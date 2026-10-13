@@ -236,9 +236,12 @@ public static class ImageComposer
 
         try
         {
+            // Read through a stream, not a Uri: a file Uri can unescape "%20" or "%C3%BC" in a file name
+            // and open a different file. OnLoad reads every pixel in EndInit, so the stream can close after.
+            using var stream = File.OpenRead(path);
             var image = new BitmapImage();
             image.BeginInit();
-            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.StreamSource = stream;
             image.CacheOption = BitmapCacheOption.OnLoad;
             image.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
             if (decodeWidth > 0) image.DecodePixelWidth = decodeWidth;
@@ -287,28 +290,41 @@ public static class ImageComposer
         return 1;
     }
 
-    /// <summary>Orientations 6 and 8 are the quarter turns <see cref="ApplyExifOrientation"/> applies.</summary>
-    private static bool IsSideways(ushort orientation) => orientation is 6 or 8;
+    /// <summary>Orientations 5 to 8 are the ones <see cref="ApplyExifOrientation"/> turns a quarter.</summary>
+    private static bool IsSideways(ushort orientation) => orientation is 5 or 6 or 7 or 8;
 
     /// <summary>
     /// WPF's decoders do not rotate by the EXIF orientation tag, so photos straight off a phone in a
     /// local folder would otherwise appear sideways.
+    /// <para>
+    /// 2, 4, 5 and 7 are the mirrored forms: the same turn as their neighbours, then a horizontal flip.
+    /// Each step is its own bitmap, so the result never depends on which of a combined turn and flip
+    /// WIC would apply first.
+    /// </para>
     /// </summary>
     private static BitmapSource ApplyExifOrientation(BitmapSource image, ushort orientation)
     {
-        var transform = orientation switch
+        double angle = orientation switch
         {
-            3 => new RotateTransform(180),
-            6 => new RotateTransform(90),
-            8 => new RotateTransform(270),
-            _ => null,
+            3 or 4 => 180,
+            5 or 6 => 90,
+            7 or 8 => 270,
+            _ => 0,
         };
-        if (transform is null) return image;
+        bool mirror = orientation is 2 or 4 or 5 or 7;
 
+        BitmapSource result = image;
+        if (angle != 0) result = Transformed(result, new RotateTransform(angle));
+        if (mirror) result = Transformed(result, new ScaleTransform(-1, 1));
+        return result;
+    }
+
+    private static BitmapSource Transformed(BitmapSource source, Transform transform)
+    {
         transform.Freeze();
-        var rotated = new TransformedBitmap(image, transform);
-        rotated.Freeze();
-        return rotated;
+        var bitmap = new TransformedBitmap(source, transform);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     // ---------------- drawing ----------------

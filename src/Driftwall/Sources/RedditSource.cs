@@ -251,7 +251,7 @@ public sealed class RedditSource : PhotoSourceBase
                 ["device_id"] = "DO_NOT_TRACK_THIS_DEVICE",
             });
 
-        using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var res = await Net.SendAsync(http, req, HttpCompletionOption.ResponseHeadersRead, ct, DisplayName).ConfigureAwait(false);
         if (res.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             throw new SourceException("Reddit rejected the app id/secret. Re-copy them from reddit.com/prefs/apps.", isAuth: true);
         Net.EnsureOk(res, DisplayName);

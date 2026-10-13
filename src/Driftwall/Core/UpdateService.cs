@@ -57,6 +57,10 @@ public sealed class UpdateService : IDisposable
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(24);
     private static readonly TimeSpan RetryWhenReady = TimeSpan.FromMinutes(10);
 
+    // HttpClient's own timeout ends once the headers are in. A download whose connection dies without
+    // a reset would otherwise wait for ever, and hold up every check and install after it.
+    private static readonly TimeSpan DownloadStallTimeout = TimeSpan.FromSeconds(60);
+
     private readonly SettingsStore _settings;
     private readonly HttpClient _http;
     private readonly Timer _timer;
@@ -264,10 +268,18 @@ public sealed class UpdateService : IDisposable
                 : $"Driftwall {latest.Version} is available.";
             return latest;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            // Only a cancellation the caller asked for is quiet. A timeout is a failure like any other.
             State = UpdateState.Idle;
             Message = null;
+            return null;
+        }
+        catch (UnreadableReleaseException ex)
+        {
+            Log.Warn("Update check failed: " + ex.Message);
+            State = UpdateState.Failed;
+            Message = ex.Message;
             return null;
         }
         catch (Exception ex)
@@ -289,7 +301,9 @@ public sealed class UpdateService : IDisposable
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        // The small body is read as part of the request, so HttpClient's timeout covers it as well:
+        // a connection that stalls half-way through cannot leave the check waiting for ever.
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct).ConfigureAwait(false);
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
 
@@ -297,8 +311,10 @@ public sealed class UpdateService : IDisposable
         using var json = await JsonDocument.ParseAsync(stream, default, ct).ConfigureAwait(false);
         var root = json.RootElement;
 
+        // A pre-release tag such as v1.1.0-beta published as the latest release is not "no release",
+        // and saying so would hide why nothing is offered.
         var tag = root.GetProperty("tag_name").GetString() ?? string.Empty;
-        if (!Version.TryParse(tag.TrimStart('v', 'V'), out var version)) return null;
+        if (!Version.TryParse(tag.TrimStart('v', 'V'), out var version)) throw new UnreadableReleaseException(tag);
         version = new Version(version.Major, Math.Max(0, version.Minor), Math.Max(0, version.Build));
 
         string? installerName = null, installerUrl = null, portableName = null, portableUrl = null, sumsUrl = null;
@@ -356,21 +372,25 @@ public sealed class UpdateService : IDisposable
             var target = Path.Combine(Paths.UpdatesDirectory, name);
             var partial = target + ".part";
 
+            using (var stall = CancellationTokenSource.CreateLinkedTokenSource(ct))
             using (var request = new HttpRequestMessage(HttpMethod.Get, url))
             using (var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
             {
                 response.EnsureSuccessStatusCode();
                 long total = response.Content.Headers.ContentLength ?? -1;
 
-                await using var network = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                // Started again with every chunk, so it limits a silence, not the whole download.
+                stall.CancelAfter(DownloadStallTimeout);
+                await using var network = await response.Content.ReadAsStreamAsync(stall.Token).ConfigureAwait(false);
                 await using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
 
                 var buffer = new byte[1 << 16];
                 long written = 0;
                 int lastPercent = -1;
                 int read;
-                while ((read = await network.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+                while ((read = await network.ReadAsync(buffer, stall.Token).ConfigureAwait(false)) > 0)
                 {
+                    stall.CancelAfter(DownloadStallTimeout);
                     await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
                     written += read;
                     if (total > 0)
@@ -405,8 +425,10 @@ public sealed class UpdateService : IDisposable
             Message = $"Driftwall {info.Version} is downloaded and ready to install.";
             return true;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            // Back to waiting quietly only when the caller cancelled. A stall or a timeout is a
+            // failure: logged, and tried again on a later pass.
             State = UpdateState.Available;
             Message = $"Driftwall {info.Version} is available.";
             return false;
@@ -620,7 +642,9 @@ public sealed class UpdateService : IDisposable
                 // starts the new one, or starts the old one again if the swap fails. cmd rather than
                 // PowerShell so it needs no policy. The paths travel in environment variables, which
                 // cmd receives as UTF-16; written into the script they would be read in the console
-                // code page and garbled for a user name in Korean, say. The script removes itself.
+                // code page and garbled for a user name in Korean, say. The new file is copied in, not
+                // moved: a move keeps the permissions it had in this user's profile, and another account
+                // sharing the folder could then no longer start it. The script removes itself.
                 var script = Path.Combine(Paths.UpdatesDirectory, "apply-update.cmd");
                 File.WriteAllText(script, string.Join("\r\n", new[]
                 {
@@ -629,7 +653,8 @@ public sealed class UpdateService : IDisposable
                     "tasklist /FI \"PID eq %DW_PID%\" 2>nul | find \" %DW_PID% \" >nul",
                     "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)",
                     "move /y \"%DW_EXE%\" \"%DW_EXE%.old\" >nul || (start \"\" \"%DW_EXE%\" %DW_ARGS% & exit /b 1)",
-                    "move /y \"%DW_NEW%\" \"%DW_EXE%\" >nul || (move /y \"%DW_EXE%.old\" \"%DW_EXE%\" >nul & start \"\" \"%DW_EXE%\" %DW_ARGS% & exit /b 1)",
+                    "copy /y \"%DW_NEW%\" \"%DW_EXE%\" >nul || (move /y \"%DW_EXE%.old\" \"%DW_EXE%\" >nul & start \"\" \"%DW_EXE%\" %DW_ARGS% & exit /b 1)",
+                    "del \"%DW_NEW%\" >nul 2>nul",
                     "start \"\" \"%DW_EXE%\" %DW_ARGS%",
                     "del \"%DW_EXE%.old\" >nul 2>nul",
                     "(goto) 2>nul & del \"%~f0\"",
@@ -746,10 +771,13 @@ public sealed class UpdateService : IDisposable
 
             if (State != UpdateState.Ready && !await DownloadAsync().ConfigureAwait(false)) return;
 
-            // Never pull the app out from under someone who is using it or playing something.
-            if (IsWindowVisible?.Invoke() == true || SystemConditions.IsFullscreenAppRunning())
+            // Never pull the app out from under someone who is using it or playing something. Only the
+            // open window is worth a word: the notice says closing it installs the update. A game asks
+            // nothing of anyone, as the retry installs the update once it is over.
+            bool windowOpen = IsWindowVisible?.Invoke() == true;
+            if (windowOpen || SystemConditions.IsFullscreenAppRunning())
             {
-                TellOnce(info);
+                if (windowOpen) TellOnce(info);
                 _timer.Change(RetryWhenReady, CheckInterval);
                 return;
             }
@@ -815,6 +843,10 @@ public sealed class UpdateService : IDisposable
         try { if (File.Exists(path)) File.Delete(path); }
         catch (Exception ex) { Log.Warn("Could not delete " + path, ex); }
     }
+
+    /// <summary>The latest release has a tag this copy cannot read as a version.</summary>
+    private sealed class UnreadableReleaseException(string tag)
+        : Exception($"The latest release ({tag}) has a version this copy cannot read.");
 
 
     public void Dispose()
