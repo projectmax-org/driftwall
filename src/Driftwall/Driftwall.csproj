@@ -20,7 +20,7 @@
     <RepositoryUrl>https://github.com/projectmax-org/driftwall</RepositoryUrl>
     <!-- The only version to edit. AssemblyVersion and FileVersion follow it, and the updater compares
          AssemblyVersion with the release tag, so a stale copy would reinstall the same release forever. -->
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
     <!-- Keep "Product version" in the file's properties a plain 1.2.3, not 1.2.3+<commit>. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>

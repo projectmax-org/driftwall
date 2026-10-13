@@ -68,9 +68,12 @@ internal static class Program
             Console.WriteLine($"      {monitor.ResolutionLabel} at ({monitor.X},{monitor.Y})" +
                               (monitor.IsPrimary ? "  primary" : string.Empty));
             Console.WriteLine($"      id: {Shorten(monitor.Id)}");
+            if (!string.Equals(monitor.ShellId, monitor.Id, StringComparison.OrdinalIgnoreCase))
+                Console.WriteLine($"      wallpaper id: {(monitor.ShellId is null ? "(none)" : monitor.ShellId.Length == 0 ? "(listed without a path)" : Shorten(monitor.ShellId))}");
 
             Check($"monitor {monitor.Index} has a usable size", monitor.Width > 0 && monitor.Height > 0);
-            Check($"monitor {monitor.Index} has a shell id", !string.IsNullOrEmpty(monitor.Id));
+            Check($"monitor {monitor.Index} has an id", !string.IsNullOrEmpty(monitor.Id));
+            Check($"monitor {monitor.Index} can have its own wallpaper", monitor.ShellId is not null);
         }
 
         return monitors;
@@ -344,7 +347,7 @@ internal static class Program
 
         // A display showing a solid colour reports no path, and one on a slideshow reports only its
         // current slide. Neither can be put back exactly, so the desktop is left alone.
-        var unknown = monitors.Where(m => !string.IsNullOrEmpty(m.Id) && !original.ContainsKey(m.Id)).ToList();
+        var unknown = monitors.Where(m => m.ShellId is not null && !original.ContainsKey(m.Id)).ToList();
         if (unknown.Count > 0)
         {
             Console.WriteLine($"  SKIP  {unknown.Count} display(s) show no picture this test could restore afterwards");
@@ -380,7 +383,7 @@ internal static class Program
                 // Position matters as much as the file: the engine sets Fill, and leaving that behind
                 // would silently change how the user's own wallpaper is framed.
                 RestoreMissingFiles(backups);
-                RestoreWallpaper(original, originalPosition);
+                RestoreWallpaper(original, monitors, originalPosition);
                 foreach (var copy in backups.Values) TryDelete(copy);
                 DeleteOwnRenders(monitors);
                 Console.WriteLine($"  original wallpaper and position ({originalPosition}) restored");
@@ -483,7 +486,9 @@ internal static class Program
 
         do
         {
-            foreach (var file in Directory.EnumerateFiles(themes, "Transcoded_*"))
+            // Transcoded_000 and on hold one display each; TranscodedWallpaper holds the picture
+            // set for every display at once, which is where a display without its own id gets it.
+            foreach (var file in Directory.EnumerateFiles(themes, "Transcoded*"))
             {
                 try
                 {
@@ -559,7 +564,8 @@ internal static class Program
             {
                 try
                 {
-                    var path = shell.GetWallpaper(monitor.Id);
+                    if (monitor.ShellId is null) continue;
+                    var path = shell.GetWallpaper(monitor.ShellId);
                     if (!string.IsNullOrEmpty(path)) map[monitor.Id] = path;
                 }
                 catch (COMException)
@@ -625,20 +631,49 @@ internal static class Program
     }
 
     private static void RestoreWallpaper(
-        Dictionary<string, string> original, NativeMethods.DesktopWallpaperPosition position)
+        Dictionary<string, string> original, IReadOnlyList<MonitorInfo> monitors, NativeMethods.DesktopWallpaperPosition position)
     {
         var shell = CreateShell();
         if (shell is null) return;
 
         try
         {
-            foreach (var (monitorId, path) in original)
+            // Keyed by each display's own id; the shell is addressed by the id it knows the display by.
+            // A display listed without a path takes the empty id, which Windows applies to every
+            // display, so it goes first and the named ones are set after it.
+            var restores = original
+                .Select(pair => (ShellId: monitors.FirstOrDefault(m => string.Equals(m.Id, pair.Key, StringComparison.OrdinalIgnoreCase))?.ShellId, Path: pair.Value))
+                .Where(r => r.ShellId is not null)
+                .OrderBy(r => r.ShellId!.Length == 0 ? 0 : 1)
+                .ToList();
+
+            bool unnamedSent = false;
+            foreach (var (shellId, path) in restores)
             {
+                var monitorId = shellId!;
+
+                // After an empty-id restore, which Windows applies a moment late to every display, wait
+                // for it to land before restoring the named ones, or it overwrites them.
+                if (monitorId.Length > 0 && unnamedSent)
+                {
+                    var unnamedPath = restores[0].Path;
+                    for (int wait = 0; wait < 50; wait++)
+                    {
+                        try { if (string.Equals(shell.GetWallpaper(monitorId), unnamedPath, StringComparison.OrdinalIgnoreCase)) break; }
+                        catch (Exception) { /* ask again */ }
+                        Thread.Sleep(100);
+                    }
+                }
                 // A display the running app has changed since the test put its render up is left as
                 // the app set it: the old picture would contradict what the app says is showing.
                 string? current = null;
                 try { current = shell.GetWallpaper(monitorId); } catch (Exception) { /* restore it anyway */ }
-                if (!string.IsNullOrEmpty(current) && !IsOwnRender(current) &&
+
+                // The empty-id restore just above reaches every display, so finding its file here is
+                // this test's doing, not the app's.
+                bool fromUnnamedRestore = unnamedSent && monitorId.Length > 0 &&
+                                          string.Equals(current, restores[0].Path, StringComparison.OrdinalIgnoreCase);
+                if (!string.IsNullOrEmpty(current) && !IsOwnRender(current) && !fromUnnamedRestore &&
                     !string.Equals(current, path, StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine($"  {monitorId[..Math.Min(24, monitorId.Length)]}... was changed by Driftwall during the test; left as it is");
@@ -646,7 +681,7 @@ internal static class Program
                 }
 
                 // Failed HRESULTs arrive as several exception types; one display must not stop the rest.
-                try { shell.SetWallpaper(monitorId, path); }
+                try { shell.SetWallpaper(monitorId, path); if (monitorId.Length == 0) unnamedSent = true; }
                 catch (Exception ex) { Console.WriteLine($"  WARNING: could not restore {monitorId}: {ex.Message}"); }
             }
 
@@ -680,7 +715,7 @@ internal static class Program
         {
             // If Windows could not say what every display shows, nothing is safe to delete.
             var current = CaptureCurrentWallpaper(monitors);
-            if (current.Count < monitors.Count(m => !string.IsNullOrEmpty(m.Id))) return;
+            if (current.Count < monitors.Count(m => m.ShellId is not null)) return;
 
             var shown = current.Values.ToHashSet(StringComparer.OrdinalIgnoreCase);
             foreach (var file in Directory.EnumerateFiles(Paths.RenderDirectory).Where(IsOwnRender).ToList())

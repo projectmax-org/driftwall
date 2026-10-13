@@ -29,6 +29,12 @@ public sealed class WallpaperEngine
     private readonly SemaphoreSlim _applyLock = new(1, 1);
 
     private IReadOnlyList<MonitorInfo>? _monitors;
+
+    /// <summary>
+    /// The last file set through the empty id. Windows does not reliably report it back once the
+    /// displays show different pictures, so the clean-up keeps it from here instead.
+    /// </summary>
+    private string? _unnamedPath;
     private long _renderSequence;
 
     public WallpaperEngine(ImageCache cache)
@@ -188,22 +194,87 @@ public sealed class WallpaperEngine
             try { shell.SetPosition(DesktopWallpaperPosition.Fill); }
             catch (COMException ex) { Log.Warn("SetPosition failed.", ex); }
 
-            foreach (var assignment in assignments)
+            // Displays with no shell id at all can only take the single-image legacy API, which covers
+            // the whole desktop; calling it once per display would leave only the last one standing.
+            var legacy = assignments.Where(a => a.Monitor.ShellId is null).OrderByDescending(a => a.Monitor.IsPrimary).FirstOrDefault();
+            if (legacy is not null) ApplyLegacy(legacy.RenderedPath);
+
+            // Every display the shell knows by its own id, with the file it should end up showing.
+            var targets = assignments
+                .Where(a => !string.IsNullOrEmpty(a.Monitor.ShellId))
+                .Select(a => (Id: a.Monitor.ShellId!, Path: a.RenderedPath, Name: a.Monitor.Name))
+                .ToList();
+
+            // A display the shell lists without a device path can only be reached with an empty id,
+            // and Windows applies that to every display. So it goes first, and every other display is
+            // then set by its own id: the ones in this change get their new file, the ones it leaves
+            // alone get back what they showed before.
+            var unnamed = assignments.FirstOrDefault(a => a.Monitor.ShellId == string.Empty);
+            bool landed = true;
+            if (unnamed is not null)
             {
-                if (string.IsNullOrEmpty(assignment.Monitor.Id))
+                var before = CurrentWallpapersByShellId(shell);
+                var assigned = targets.Select(t => t.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var leftAlone = Monitors.Where(m => !string.IsNullOrEmpty(m.ShellId) && !assigned.Contains(m.ShellId)).ToList();
+
+                // A display this change leaves alone would be overwritten too. If what it shows now
+                // cannot be put back (a solid colour, a slideshow, a file since deleted), the display
+                // the user chose to leave alone matters more than this change to the unnamed one.
+                var stranded = leftAlone.Where(m => !before.TryGetValue(m.ShellId!, out var p) || !File.Exists(p)).ToList();
+                if (stranded.Count > 0)
                 {
-                    ApplyLegacy(assignment.RenderedPath);
-                    continue;
+                    Log.Warn($"{unnamed.Monitor.Name} was not changed: Windows can reach it only together with every display, " +
+                             $"and what {string.Join(", ", stranded.Select(m => m.Name))} shows now could not be put back afterwards.");
+                    unnamed = null;
+                }
+                else
+                {
+                    targets.AddRange(leftAlone.Select(m => (Id: m.ShellId!, Path: before[m.ShellId!], Name: m.Name)));
+                    if (assignments.Count(a => a.Monitor.ShellId == string.Empty) > 1)
+                        Log.Warn("More than one display is listed without a device path; they all show the same photo.");
+
+                    try
+                    {
+                        shell.SetWallpaper(string.Empty, unnamed.RenderedPath);
+                        _unnamedPath = unnamed.RenderedPath;
+
+                        // Explorer applies an empty-id call a moment after it returns. A display set by
+                        // its own id before then is overwritten by it, so wait until it has landed.
+                        landed = WaitForUnnamedToLand(shell, unnamed.RenderedPath, TimeSpan.FromSeconds(5));
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn($"SetWallpaper failed for {unnamed.Monitor.Name}.", ex);
+                        unnamed = null;
+                    }
+                }
+            }
+
+            SetEach(shell, targets);
+
+            if (unnamed is not null)
+            {
+                if (!landed)
+                {
+                    // It is still on its way. When it lands it covers the displays just set, so wait a
+                    // while longer and set them again if it does.
+                    Log.Warn("Windows took more than 5 seconds to apply the wallpaper of the display it lists without a device path.");
+                    if (WaitForUnnamedToLand(shell, unnamed.RenderedPath, TimeSpan.FromSeconds(10))) SetEach(shell, targets);
                 }
 
-                try
+                // A last look: any display still showing something else is set once more.
+                foreach (var (id, path, name) in targets)
                 {
-                    shell.SetWallpaper(assignment.Monitor.Id, assignment.RenderedPath);
-                }
-                catch (COMException ex)
-                {
-                    Log.Warn($"SetWallpaper failed for {assignment.Monitor.Name}; using the legacy path.", ex);
-                    ApplyLegacy(assignment.RenderedPath);
+                    try
+                    {
+                        if (string.Equals(shell.GetWallpaper(id), path, StringComparison.OrdinalIgnoreCase)) continue;
+                        Thread.Sleep(300);
+                        shell.SetWallpaper(id, path);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warn($"Could not confirm the wallpaper of {name}.", ex);
+                    }
                 }
             }
         }
@@ -217,6 +288,66 @@ public sealed class WallpaperEngine
         {
             if (shell is not null && Marshal.IsComObject(shell)) Marshal.FinalReleaseComObject(shell);
         }
+    }
+
+    /// <summary>Sets each display by its own id; one failing does not stop the rest.</summary>
+    private static void SetEach(IDesktopWallpaper shell, IEnumerable<(string Id, string Path, string Name)> targets)
+    {
+        foreach (var (id, path, name) in targets)
+        {
+            // Failed HRESULTs arrive as several exception types. Only this display is affected, so the
+            // single-image legacy path, which would cover all of them, is not used here.
+            try { shell.SetWallpaper(id, path); }
+            catch (Exception ex) { Log.Warn($"SetWallpaper failed for {name}.", ex); }
+        }
+    }
+
+    /// <summary>
+    /// Waits until a display with its own id reports <paramref name="path"/>: the sign that an
+    /// empty-id SetWallpaper, which covers every display, has been applied. False on time-out.
+    /// </summary>
+    private bool WaitForUnnamedToLand(IDesktopWallpaper shell, string path, TimeSpan timeout)
+    {
+        var named = Monitors.FirstOrDefault(m => !string.IsNullOrEmpty(m.ShellId));
+        if (named is null) return true;
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.Elapsed < timeout)
+        {
+            try
+            {
+                if (string.Equals(shell.GetWallpaper(named.ShellId!), path, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            catch (Exception)
+            {
+                // Asked again below.
+            }
+
+            Thread.Sleep(100);
+        }
+
+        return false;
+    }
+
+    /// <summary>What each named display shows now, by the id the shell knows it by.</summary>
+    private Dictionary<string, string> CurrentWallpapersByShellId(IDesktopWallpaper shell)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var monitor in Monitors)
+        {
+            if (string.IsNullOrEmpty(monitor.ShellId)) continue;
+            try
+            {
+                var path = shell.GetWallpaper(monitor.ShellId);
+                if (!string.IsNullOrEmpty(path)) map[monitor.ShellId] = path;
+            }
+            catch (Exception)
+            {
+                // Nothing of its own to put back.
+            }
+        }
+
+        return map;
     }
 
     private static void ApplyLegacy(string path)
@@ -319,16 +450,19 @@ public sealed class WallpaperEngine
                 inUse.Add(Path.GetFullPath(assignment.RenderedPath));
         }
 
+        if (_unnamedPath is not null) inUse.Add(Path.GetFullPath(_unnamedPath));
+
         IDesktopWallpaper? shell = null;
         try
         {
             shell = (IDesktopWallpaper)new DesktopWallpaperClass();
             foreach (var monitor in Monitors)
             {
-                if (string.IsNullOrEmpty(monitor.Id)) continue;
+                // An empty shell id is a real entry here: the display the shell lists without a path.
+                if (monitor.ShellId is null) continue;
                 try
                 {
-                    var path = shell.GetWallpaper(monitor.Id);
+                    var path = shell.GetWallpaper(monitor.ShellId);
                     if (!string.IsNullOrEmpty(path)) inUse.Add(Path.GetFullPath(path));
                 }
                 catch (Exception)
